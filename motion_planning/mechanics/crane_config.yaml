@@ -1,0 +1,35 @@
+urdf_path: ../../crane_urdf/crane.urdf
+gravity:
+- 0.0
+- 0.0
+- -9.81
+base_frame: K0_mounting_base
+target_frame: K8_tool_center_point_tcp
+actuated_joints:
+- theta1_slewing_joint
+- theta2_boom_joint
+- theta3_arm_joint
+- q4_big_telescope
+- theta8_rotator_joint
+passive_joints:
+- theta6_tip_joint
+- theta7_tilt_joint
+dynamic_joints:
+- theta1_slewing_joint
+- theta2_boom_joint
+- theta3_arm_joint
+- q4_big_telescope
+- theta6_tip_joint
+- theta7_tilt_joint
+- theta8_rotator_joint
+tied_joints:
+  q5_small_telescope: q4_big_telescope
+joint_position_overrides:
+  theta3_arm_joint:
+  - null
+  - 1.5707963267948966
+locked_joints:
+- truck_pitch
+- truck_roll
+- q9_left_rail_joint
+- q11_right_rail_joint

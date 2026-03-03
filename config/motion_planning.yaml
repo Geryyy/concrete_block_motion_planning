@@ -1,0 +1,6 @@
+concrete_block_motion_planning_node:
+  ros__parameters:
+    default_geometric_method: "POWELL"
+    default_trajectory_method: "ACADOS_PATH_FOLLOWING"
+    path_interpolation_points: 20
+    fallback_segment_dt_s: 0.2

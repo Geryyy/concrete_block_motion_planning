@@ -1,0 +1,12 @@
+geometry_msgs/PoseStamped start_pose
+geometry_msgs/PoseStamped goal_pose
+string target_block_id
+string reference_block_id
+string planner_method
+float32 timeout_s
+bool use_world_model
+---
+bool success
+string plan_id
+nav_msgs/Path cartesian_path
+string message

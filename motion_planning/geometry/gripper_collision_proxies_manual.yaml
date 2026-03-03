@@ -1,0 +1,24 @@
+proxies:
+  - name: left_rail_box
+    parent_frame: K10_left_rail
+    shape: box
+    position: [-0.6, -0.1, 0.0]
+    quat_xyzw: [0.7071, 0.0, 0.0, 0.7071]
+    size: [1.2, 1.10, 0.30]
+    color: [1.0, 0.3, 0.12]
+
+  - name: right_rail_box
+    parent_frame: K12_right_rail
+    shape: box
+    position: [-0.6, -0.1, 0.0]
+    quat_xyzw: [0.7071, 0.0, 0.0, 0.7071]
+    size: [1.2, 1.10, 0.30]
+    color: [1.0, 0.5, 0.1]
+
+  - name: top_gripper_box
+    parent_frame: K8_tool_center_point
+    shape: box
+    position: [0.0, 0.0, -0.75]
+    quat_xyzw: [0.0, 0.0, 0.0, 1.0]
+    size: [0.8, 0.8, 1.5]
+    color: [0.95, 0.2, 0.2]

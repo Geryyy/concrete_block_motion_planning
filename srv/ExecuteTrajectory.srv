@@ -1,0 +1,5 @@
+string trajectory_id
+bool dry_run
+---
+bool success
+string message

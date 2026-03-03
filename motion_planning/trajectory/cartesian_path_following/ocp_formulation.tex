@@ -1,0 +1,452 @@
+% Cartesian Path-Following OCP Formulation
+% Compiled with pdflatex (no external packages beyond standard AMS/geometry).
+\documentclass[11pt, a4paper]{article}
+
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{bm}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\geometry{margin=2.5cm}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\qd}{\bm{q}}          % decision-space joint config
+\newcommand{\dqd}{\dot{\bm{q}}}   % decision-space joint velocity
+\newcommand{\ddqd}{\ddot{\bm{q}}} % decision-space joint acceleration
+\newcommand{\qa}{\bm{q}_a}        % actuated joints
+\newcommand{\qp}{\bm{q}_p}        % passive joints
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\FK}{\mathrm{FK}}
+
+\title{\textbf{Cartesian Task-Space Path-Following OCP}\\[0.4em]
+  \large Formulation for Robotic Crane Trajectory Optimisation}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\tableofcontents
+\newpage
+
+%──────────────────────────────────────────────────────────────────────────────
+\section{Problem Setting}
+%──────────────────────────────────────────────────────────────────────────────
+
+A robotic crane with $n_v$ degrees of freedom (in the reduced model) is to move its
+tool-centre point (TCP) from an initial Cartesian position to a goal position along a
+prescribed reference path in task space. The reference path is expressed as a B-spline
+$\bm{r}(s) : [0,1] \to \R^3$, parameterised by a scalar progress variable $s$.
+
+The trajectory optimisation is formulated as a finite-horizon, continuous-time nonlinear
+OCP transcribed with a multiple-shooting scheme and solved by acados using SQP with
+HPIPM as the inner QP solver.
+
+%──────────────────────────────────────────────────────────────────────────────
+\section{Model Reduction}
+%──────────────────────────────────────────────────────────────────────────────
+
+The URDF kinematic tree is reduced by rigidly locking a set of joints
+$\mathcal{J}_\text{lock}$ (e.g.\ truck pitch/roll, rail joints) at their neutral
+positions via Pinocchio's \texttt{buildReducedModel}. The remaining joints partition
+into:
+\begin{align*}
+  \mathcal{J}_a &= \{\,\theta_1,\,\theta_2,\,\theta_3,\,q_4,\,\theta_8\,\}
+                   &&\text{(actuated joints, }n_a = 5\text{)}\\
+  \mathcal{J}_p &= \{\,\theta_6,\,\theta_7\,\}
+                   &&\text{(passive / unactuated joints, }n_p = 2\text{)}
+\end{align*}
+giving a reduced model with $n_v = n_a + n_p$ generalised velocities.
+
+%──────────────────────────────────────────────────────────────────────────────
+\section{State and Input}
+%──────────────────────────────────────────────────────────────────────────────
+
+\subsection{State vector}
+
+The OCP state at time $t$ is
+\begin{equation}
+  \bm{x}(t) =
+  \begin{bmatrix}
+    \qd(t) \\ \dqd(t) \\ s(t) \\ \dot{s}(t)
+  \end{bmatrix}
+  \in \R^{2n_v + 2},
+\end{equation}
+where $\qd \in \R^{n_v}$ is the \emph{decision-space} joint configuration (angle for
+revolute joints, length for prismatic), $\dqd \in \R^{n_v}$ the corresponding
+velocities, $s \in [0,1]$ the path-progress coordinate, and $\dot{s} \in \R$ the
+progress rate.
+
+\paragraph{Pinocchio configuration.}
+Pinocchio uses a configuration space $\bm{q}_\mathrm{pin} \in \R^{n_q}$ where
+$n_q \geq n_v$ (unit quaternion joints have $n_q > n_v$). For the crane model all
+joints are either revolute or prismatic, so $n_q = n_v$ and $\bm{q}_\mathrm{pin} =
+\qd$ directly.
+
+\subsection{Input vector}
+
+\begin{equation}
+  \bm{u}(t) =
+  \begin{bmatrix}
+    \ddot{\bm{q}}_a(t) \\ v(t)
+  \end{bmatrix}
+  \in \R^{n_a + 1},
+\end{equation}
+where $\ddot{\bm{q}}_a \in \R^{n_a}$ are the joint accelerations of the actuated joints
+(direct acceleration control, no servo lag) and $v = \ddot{s}$ is the path-progress
+acceleration.
+
+%──────────────────────────────────────────────────────────────────────────────
+\section{Dynamics}
+%──────────────────────────────────────────────────────────────────────────────
+
+\subsection{Rigid-body equations of motion}
+
+The crane is governed by the standard Lagrangian EOM
+\begin{equation}
+  \bm{M}(\qd)\,\ddqd + \bm{g}(\qd) + \bm{D}\,\dqd = \bm{B}\,\bm{\tau},
+  \label{eq:eom}
+\end{equation}
+where $\bm{M}(\qd) \in \R^{n_v \times n_v}$ is the mass matrix (computed by Pinocchio's
+CRBA), $\bm{g}(\qd) \in \R^{n_v}$ the generalised gravity, $\bm{D} =
+\diag(\bm{d}) \in \R^{n_v \times n_v}$ a diagonal joint-damping matrix, and $\bm{B}$
+the actuation selector ($B_{ij} = 1$ if joint $i \in \mathcal{J}_a$, 0 otherwise).
+
+\subsection{Projected (default) dynamics mode}
+
+The actuated accelerations $\ddot{\bm{q}}_a$ are set directly from the input:
+\begin{equation}
+  \ddot{q}_{a,i} = u_i, \quad i = 1,\dots,n_a.
+\end{equation}
+The passive joint accelerations $\ddot{\bm{q}}_p$ are obtained by extracting the
+passive block of \eqref{eq:eom} and solving:
+\begin{equation}
+  \bigl(\bm{M}_{pp} + \epsilon \bm{I}\bigr)\,\ddot{\bm{q}}_p
+  = -\bm{M}_{p,\overline{p}}\,\ddot{\bm{q}}_{\overline{p}}
+    - \bm{g}_p - \bm{D}_p\,\dqd_p,
+  \label{eq:passive_acc}
+\end{equation}
+where $\overline{p}$ denotes all non-passive indices, $\epsilon > 0$ is a small
+regularisation term, and the subscript notation extracts the corresponding sub-block.
+This yields a fully determined system: the actuated DOFs drive the passive DOFs through
+the inertial coupling.
+
+\subsection{Split (alternative) dynamics mode}
+
+In the split mode, the passive equation is solved for $\ddot{\bm{q}}_p$ from only the
+actuated-to-passive coupling:
+\begin{equation}
+  \bigl(\bm{M}_{pp} + \epsilon \bm{I}\bigr)\,\ddot{\bm{q}}_p
+  = -\bm{M}_{pa}\,\ddot{\bm{q}}_a - \bm{g}_p - \bm{D}_p\,\dqd_p.
+\end{equation}
+This mirrors the pycrane tspfc formulation and gives a cleaner symbolic expression with
+fewer inertial coupling terms.
+
+\subsection{Explicit ODE}
+
+Both modes produce the explicit right-hand side
+\begin{equation}
+  \dot{\bm{x}} = f(\bm{x}, \bm{u}) =
+  \begin{bmatrix}
+    \dqd \\ \ddqd(\qd, \dqd, \bm{u}) \\ \dot{s} \\ v
+  \end{bmatrix},
+\end{equation}
+integrated with an implicit Runge-Kutta (IRK) scheme inside acados.
+
+%──────────────────────────────────────────────────────────────────────────────
+\section{Cartesian Reference Path}
+%──────────────────────────────────────────────────────────────────────────────
+
+The reference path is a B-spline of degree $d$ (default $d=3$) with $m$ control points
+$\bm{P}_0,\dots,\bm{P}_{m-1} \in \R^3$:
+\begin{equation}
+  \bm{r}(s) = \sum_{i=0}^{m-1} B_{i,d}(s)\,\bm{P}_i, \quad s \in [0,1],
+\end{equation}
+where $B_{i,d}$ are the B-spline basis functions on a uniform clamped knot vector.
+The control points are obtained in one of three ways (in priority order):
+\begin{enumerate}
+  \item Explicitly supplied via \texttt{ctrl\_pts\_xyz} $\in \R^{m \times 3}$ in the
+        request configuration.
+  \item Sampled from a \texttt{BSplinePath} returned by the geometric planner
+        (Stage~1 of the two-stage pipeline).
+  \item Fallback: straight line $\bm{P}_i = (1-\frac{i}{m-1})\,\FK(\qd_0) +
+        \frac{i}{m-1}\,\FK(\qd_N)$ between the TCP positions at start and goal.
+\end{enumerate}
+
+The Cartesian tracking error at configuration $\qd$ and progress $s$ is
+\begin{equation}
+  \bm{e}(\qd, s) = \FK(\qd) - \bm{r}(s) \in \R^3,
+\end{equation}
+where $\FK : \R^{n_v} \to \R^3$ is the symbolic forward-kinematics map from the
+decision-space configuration to the TCP position, implemented via
+\texttt{pinocchio.casadi}.
+
+%──────────────────────────────────────────────────────────────────────────────
+\section{Objective Function}
+%──────────────────────────────────────────────────────────────────────────────
+
+\subsection{Running cost residual}
+
+The running cost is formulated as a weighted nonlinear least-squares residual
+\begin{equation}
+  \bm{y}(\bm{x}, \bm{u}) =
+  \begin{bmatrix}
+    \bm{e}(\qd, s)         \\[2pt]
+    1 - s                  \\[2pt]
+    \dot{s} - \dot{s}_\mathrm{ref} \\[2pt]
+    \ddot{\bm{q}}_a        \\[2pt]
+    v                      \\[2pt]
+    \qp - \qp^0            \\[2pt]
+    \dqd_p
+  \end{bmatrix}
+  \in \R^{n_y},
+  \qquad
+  n_y = 3 + 1 + 1 + n_a + 1 + 2n_p,
+\end{equation}
+with diagonal weight matrix
+\begin{equation}
+  \bm{W} = \diag\bigl(
+    w_\mathrm{xyz}\bm{1}_3,\;
+    w_s,\;
+    w_{\dot{s}},\;
+    w_u\bm{1}_{n_a},\;
+    w_v,\;
+    w_{p,q}\bm{1}_{n_p},\;
+    w_{p,\dot{q}}\bm{1}_{n_p}
+  \bigr),
+\end{equation}
+where $\qp^0$ is the initial passive-joint configuration used as the anti-sway
+equilibrium reference. The running cost integrated over the horizon is
+\begin{equation}
+  \ell(\bm{x},\bm{u}) = \tfrac{1}{2}\,\bm{y}^\top \bm{W}\, \bm{y}.
+\end{equation}
+
+\paragraph{Interpretation of each term.}
+\begin{itemize}
+  \item $\bm{e}(\qd,s)$: Cartesian TCP tracking error along the B-spline path.
+  \item $1-s$: penalises incomplete progress; drives $s \to 1$.
+  \item $\dot{s} - \dot{s}_\mathrm{ref}$: tracks a reference progress speed
+        $\dot{s}_\mathrm{ref}$ (default 0.15).
+  \item $\ddot{\bm{q}}_a$: regularises actuator effort.
+  \item $v$: regularises progress acceleration.
+  \item $\qp - \qp^0$, $\dqd_p$: anti-sway terms that penalise passive-joint
+        (tip/tilt) displacement and velocity relative to the initial equilibrium.
+\end{itemize}
+
+\subsection{Terminal cost residual}
+
+\begin{equation}
+  \bm{y}_e(\bm{x}) =
+  \begin{bmatrix}
+    \bm{e}(\qd, s)   \\[2pt]
+    \dqd             \\[2pt]
+    1 - s            \\[2pt]
+    \dot{s}          \\[2pt]
+    \qp - \qp^0      \\[2pt]
+    \dqd_p
+  \end{bmatrix}
+  \in \R^{n_{y_e}},
+  \qquad
+  n_{y_e} = 3 + n_v + 1 + 1 + 2n_p,
+\end{equation}
+with diagonal terminal weight matrix $\bm{W}_e$.
+
+\subsection{Full OCP objective}
+
+With the multiple-shooting grid $\{t_k\}_{k=0}^N$, $t_k = k \Delta t$, $\Delta t = T_f/N$:
+\begin{equation}
+  J = \sum_{k=0}^{N-1} \tfrac{1}{2}\,\bm{y}(\bm{x}_k, \bm{u}_k)^\top
+      \bm{W}\,\bm{y}(\bm{x}_k, \bm{u}_k)
+    + \tfrac{1}{2}\,\bm{y}_e(\bm{x}_N)^\top \bm{W}_e\,\bm{y}_e(\bm{x}_N).
+\end{equation}
+
+%──────────────────────────────────────────────────────────────────────────────
+\section{Constraints}
+%──────────────────────────────────────────────────────────────────────────────
+
+\subsection{Initial condition}
+
+\begin{equation}
+  \bm{x}_0 = \bigl[\qd_0^\top,\;\dqd_0^\top,\;0,\;0\bigr]^\top.
+\end{equation}
+
+\subsection{Path constraints (applied at each shooting node $k = 0,\dots,N$)}
+
+\paragraph{Input bounds.}
+\begin{equation}
+  \underline{\bm{u}} \leq \bm{u}_k \leq \bar{\bm{u}},
+\end{equation}
+with per-joint acceleration limits (Table~\ref{tab:ulimits}) and progress-acceleration
+limits $v_\min \leq v \leq v_\max$.
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lrr}
+    \toprule
+    Joint & $\ddot{q}_\min$ (rad/s$^2$) & $\ddot{q}_\max$ (rad/s$^2$) \\
+    \midrule
+    $\theta_1$ slewing    & $-0.90$ & $+0.90$ \\
+    $\theta_2$ boom       & $-0.90$ & $+0.90$ \\
+    $\theta_3$ arm        & $-0.90$ & $+0.90$ \\
+    $q_4$ telescope       & $-0.35$ & $+0.35$ \\
+    $\theta_8$ rotator    & $-0.15$ & $+0.15$ \\
+    $v = \ddot{s}$        & $-0.60$ & $+0.60$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{Input bounds.}
+  \label{tab:ulimits}
+\end{table}
+
+\paragraph{Progress state bounds.}
+\begin{equation}
+  0 \leq s_k \leq 1, \qquad 0 \leq \dot{s}_k \leq \dot{s}_\max.
+\end{equation}
+
+\subsection{Terminal equality constraints}
+
+\begin{equation}
+  \dqd_N = \bm{0}, \qquad \dot{s}_N = 0, \qquad s_N = 1.
+\end{equation}
+These are enforced as hard equality constraints via \texttt{ocp.constraints.idxbx\_e}.
+They guarantee that the robot comes to rest at the end of the path.
+
+%──────────────────────────────────────────────────────────────────────────────
+\section{Default Parameters}
+%──────────────────────────────────────────────────────────────────────────────
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{llr}
+    \toprule
+    Parameter & Symbol & Default value \\
+    \midrule
+    Horizon steps       & $N$                    & 100 \\
+    Time step           & $\Delta t$             & 0.05 s \\
+    Reference speed     & $\dot{s}_\mathrm{ref}$ & 0.15 \\
+    B-spline degree     & $d$                    & 3 \\
+    Control points      & $m$                    & 4 \\
+    \midrule
+    TCP tracking (running)  & $w_\mathrm{xyz}$   & 80 \\
+    TCP tracking (terminal) & $w_{\mathrm{xyz},e}$ & 200 \\
+    Progress            & $w_s$                  & 5 \\
+    Progress rate       & $w_{\dot{s}}$          & 3 \\
+    Control effort      & $w_u$                  & 0.5 \\
+    Progress accel.     & $w_v$                  & 1.5 \\
+    Terminal velocity   & $w_{\dot{q},e}$        & 5 \\
+    Terminal progress   & $w_{s,e}$              & 40 \\
+    Terminal speed      & $w_{\dot{s},e}$        & 6 \\
+    Passive pos.\ (run) & $w_{p,q}$              & 28 \\
+    Passive vel.\ (run) & $w_{p,\dot{q}}$        & 45 \\
+    Passive pos.\ (term) & $w_{p,q,e}$           & 80 \\
+    Passive vel.\ (term) & $w_{p,\dot{q},e}$     & 180 \\
+    \midrule
+    Hessian approx.     & —                      & Gauss-Newton \\
+    NLP solver          & —                      & SQP \\
+    QP solver           & —                      & PARTIAL\_CONDENSING\_HPIPM \\
+    Integrator          & —                      & IRK \\
+    Globalisation       & —                      & Merit backtracking \\
+    \bottomrule
+  \end{tabular}
+  \caption{Default configuration parameters.}
+  \label{tab:defaults}
+\end{table}
+
+%──────────────────────────────────────────────────────────────────────────────
+\section{Compact OCP Statement}
+%──────────────────────────────────────────────────────────────────────────────
+
+\begin{equation}
+  \boxed{
+  \begin{aligned}
+    \min_{\{\bm{x}_k,\bm{u}_k\}_{k=0}^{N}}
+    \quad & \sum_{k=0}^{N-1} \tfrac{1}{2}\,\bm{y}_k^\top \bm{W} \bm{y}_k
+           + \tfrac{1}{2}\,\bm{y}_{e,N}^\top \bm{W}_e \bm{y}_{e,N} \\[4pt]
+    \text{s.t.} \quad
+    & \bm{x}_{k+1} = \Phi_{\Delta t}(\bm{x}_k, \bm{u}_k),
+      \quad k = 0,\dots,N-1 \quad \text{(IRK integration)} \\
+    & \bm{x}_0 = [\qd_0^\top,\bm{0}^\top,0,0]^\top \\
+    & \underline{\bm{u}} \leq \bm{u}_k \leq \bar{\bm{u}},
+      \quad k = 0,\dots,N-1 \\
+    & 0 \leq s_k \leq 1,\quad 0 \leq \dot{s}_k \leq \dot{s}_\mathrm{max},
+      \quad k = 0,\dots,N \\
+    & \dqd_N = \bm{0},\quad \dot{s}_N = 0,\quad s_N = 1
+  \end{aligned}
+  }
+  \label{eq:ocp}
+\end{equation}
+
+with residuals
+\begin{align}
+  \bm{y}_k &= \bigl[\bm{e}_k^\top,\;1-s_k,\;\dot{s}_k - \dot{s}_\mathrm{ref},\;
+               \ddot{\bm{q}}_{a,k}^\top,\;v_k,\;(\qp_k - \qp^0)^\top,\;\dqd_{p,k}^\top
+               \bigr]^\top \\[4pt]
+  \bm{y}_{e,N} &= \bigl[\bm{e}_N^\top,\;\dqd_N^\top,\;1-s_N,\;\dot{s}_N,\;
+                  (\qp_N-\qp^0)^\top,\;\dqd_{p,N}^\top\bigr]^\top \\[4pt]
+  \bm{e}_k &= \FK(\qd_k) - \bm{r}(s_k).
+\end{align}
+
+%──────────────────────────────────────────────────────────────────────────────
+\section{Numerical Solver Setup}
+%──────────────────────────────────────────────────────────────────────────────
+
+\subsection{Gauss-Newton Hessian approximation}
+
+The full second-order Hessian of $\ell = \frac{1}{2}\bm{y}^\top \bm{W} \bm{y}$ is
+\begin{equation}
+  \nabla^2_{xx}\ell = \bm{J}^\top \bm{W} \bm{J}
+  + \sum_{i} w_i\,y_i\,\nabla^2_{xx} y_i,
+  \label{eq:exact_hess}
+\end{equation}
+where $\bm{J} = \partial\bm{y}/\partial(\bm{x},\bm{u})$.  The second sum contains
+second-order FK terms $\nabla^2_{qq}\FK_i$ that are non-zero for any kinematic chain.
+When the initial residuals are large (as occurs for a linear warm-start applied to a
+large-motion problem), these terms dominate and make~\eqref{eq:exact_hess} indefinite,
+causing the interior-point QP solver to fail.
+
+The Gauss-Newton approximation retains only the first term:
+\begin{equation}
+  \bm{H}_\mathrm{GN} = \bm{J}^\top \bm{W} \bm{J} \succeq 0,
+\end{equation}
+which is guaranteed positive semi-definite for any $\bm{W} \succeq 0$. This is
+consistent with acados's \texttt{NONLINEAR\_LS} cost type combined with
+\texttt{hessian\_approx = "GAUSS\_NEWTON"}.
+
+\paragraph{Remark.}
+Setting \texttt{hessian\_approx = "GAUSS\_NEWTON"} while using \texttt{cost\_type =
+"EXTERNAL"} has no effect in acados: the exact Hessian is always computed for scalar
+external costs. The \texttt{NONLINEAR\_LS} reformulation is required to enable the
+Gauss-Newton approximation.
+
+\subsection{Warm start}
+
+The solver is initialised with a linear interpolation of the state from
+$\bm{x}_0$ to $[\qd_N^\top, \bm{0}^\top, 1, \dot{s}_\mathrm{ref}]^\top$ across the
+$N+1$ shooting nodes. The input is initialised to zero for all actuated joints and to
+$v = \dot{s}_\mathrm{ref}/T_f$ for the progress channel.
+
+\subsection{Summary of acados configuration}
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{ll}
+    \toprule
+    Option & Value \\
+    \midrule
+    \texttt{cost\_type} / \texttt{cost\_type\_e} & \texttt{NONLINEAR\_LS} \\
+    \texttt{hessian\_approx}                     & \texttt{GAUSS\_NEWTON} \\
+    \texttt{nlp\_solver\_type}                   & \texttt{SQP} \\
+    \texttt{qp\_solver}                          & \texttt{PARTIAL\_CONDENSING\_HPIPM} \\
+    \texttt{integrator\_type}                    & \texttt{IRK} \\
+    \texttt{globalization}                       & \texttt{MERIT\_BACKTRACKING} \\
+    \texttt{nlp\_solver\_max\_iter}              & 200 \\
+    \texttt{qp\_solver\_iter\_max}               & 100 \\
+    NLP / QP tolerance                           & $10^{-6}$ / $10^{-7}$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{acados solver configuration.}
+  \label{tab:acados}
+\end{table}
+
+\end{document}

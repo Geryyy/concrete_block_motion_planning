@@ -1,5 +1,35 @@
 # Motion Planning
 
+## Dependency Management
+
+Dependencies are declared in layers:
+
+- ROS package deps: `package.xml`
+  - e.g. `rclpy`, message packages (`geometry_msgs`, `nav_msgs`, `trajectory_msgs`, ...)
+- Python runtime/tooling deps: `pyproject.toml` and `requirements-*.txt`
+  - core deps are in `requirements-core.txt`
+  - benchmark extras are in `requirements-benchmark.txt`
+- acados Python package deps: `acados/interfaces/acados_template/setup.py`
+  - installed locally from source (`pip install -e acados/interfaces/acados_template`)
+
+### Install core Python deps
+
+```bash
+python3 -m pip install --user -r requirements-core.txt
+```
+
+### Install benchmark extras
+
+```bash
+python3 -m pip install --user -r requirements-benchmark.txt
+```
+
+### Optional/system dependencies
+
+- `pinocchio`: required by trajectory and mechanics modules (typically installed via system package manager/robotics stack).
+- `ompl` Python bindings: optional, only needed for `OMPL-RRT` benchmark method.
+- `vpsto`: optional, only needed for `VP-STO` benchmark method.
+
 ## Available Planners
 
 - Benchmark/tooling module (`motion_planning_tools.benchmark`):

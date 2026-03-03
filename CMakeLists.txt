@@ -37,6 +37,14 @@ install(DIRECTORY
 
 install(FILES
   VENDOR_README.md
+  pyproject.toml
+  requirements-core.txt
+  requirements-benchmark.txt
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(PROGRAMS
+  acados_interface_setup.sh
   DESTINATION share/${PROJECT_NAME}
 )
 

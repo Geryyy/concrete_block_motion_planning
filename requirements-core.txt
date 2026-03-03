@@ -1,0 +1,7 @@
+# Core python dependencies used by the runtime and local tooling.
+numpy
+scipy
+matplotlib
+casadi
+cython
+Deprecated

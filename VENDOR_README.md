@@ -146,36 +146,88 @@ print(res.success, res.message, P.shape)
 
 ## acados Setup (Trajectory Optimization)
 
-For trajectory optimization (`acados + CasADi + Pinocchio`), install acados using the official docs:
+For trajectory optimization (`acados + CasADi + Pinocchio`), use the following package-local setup.
+
+### 1) Initialize acados source (recommended as submodule)
+
+If this repository tracks `acados` as a submodule:
+
+```bash
+git submodule update --init --recursive acados
+```
+
+If `acados` is not present yet, add it:
+
+```bash
+git submodule add https://github.com/acados/acados.git acados
+git submodule update --init --recursive
+```
+
+### 2) Build and install acados
+
+```bash
+cd acados
+mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DACADOS_WITH_QPOASES=ON -DACADOS_WITH_OSQP=ON
+make -j$(nproc)
+make install
+cd ../..
+```
+
+### 3) Install Python dependencies
+
+```bash
+python3 -m pip install --user casadi
+python3 -m pip install --user -e acados/interfaces/acados_template
+```
+
+### 4) Build `t_renderer` (required by acados template codegen)
+
+Install Rust toolchain (if needed), then build:
+
+```bash
+# one-time if cargo/rustc are missing
+sudo apt-get update && sudo apt-get install -y cargo rustc
+
+cd acados/interfaces/acados_template/tera_renderer
+cargo build --release
+mkdir -p ../../../bin
+cp target/release/t_renderer ../../../bin/
+cd ../../../..
+```
+
+### 5) Activate runtime environment
+
+Use the package helper script:
+
+```bash
+source acados_interface_setup.sh
+```
+
+This sets:
+- `ACADOS_SOURCE_DIR`
+- `LD_LIBRARY_PATH`
+- `PYTHONPATH`
+- `PATH` (for `t_renderer`)
+
+### 6) Verify installation
+
+```bash
+python3 -c "import acados_template, casadi, pinocchio; print('acados runtime OK')"
+ls "$ACADOS_SOURCE_DIR/bin/t_renderer"
+```
+
+### Reference docs
+
+Official docs (for advanced/custom builds):
 
 - Installation: https://docs.acados.org/installation/
 - Python interface: https://docs.acados.org/python_interface/index.html
 
-Recommended steps (inside `mp_env`):
-
-```bash
-# 1) Build/install acados following official instructions.
-#    Example: clone + build + install in your chosen location.
-
-# 2) Preferred (this repo): source the setup helper in your current shell.
-source acados_interface_setup.sh
-
-#    Fallback: manual exports (adapt path to your installation).
-# export ACADOS_SOURCE_DIR=/path/to/acados
-# export LD_LIBRARY_PATH=$ACADOS_SOURCE_DIR/lib:$LD_LIBRARY_PATH
-# export PYTHONPATH=$ACADOS_SOURCE_DIR/interfaces/acados_template:$PYTHONPATH
-
-# 3) Ensure the template renderer exists.
-ls $ACADOS_SOURCE_DIR/bin/t_renderer
-
-# 4) Quick Python check.
-python -c "import acados_template; print('acados_template ok')"
-```
-
 Notes:
 
 - `ACADOS_SOURCE_DIR` should point to a built acados tree containing `lib/link_libs.json`.
-- If `t_renderer` is missing, install/download it as described in the official installation docs.
+- If `t_renderer` is missing, build it from `acados/interfaces/acados_template/tera_renderer`.
 - Run `source acados_interface_setup.sh` (not `bash acados_interface_setup.sh`) so exports persist in the current shell.
 - `motion_planning/trajectory/crane_acados_ocp_setup.py` now prefers the repository-local `acados/` checkout when present, to avoid template/runtime mismatches.
 

@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import yaml
 
+from motion_planning.core.types import WallPlacement, WallPlan
 from motion_planning.geometry import Scene
 
 
@@ -20,6 +21,7 @@ class ScenarioConfig:
 
 
 DEFAULT_SCENARIOS_FILE = Path(__file__).with_name("data").joinpath("generated_scenarios.yaml")
+DEFAULT_WALL_PLANS_FILE = Path(__file__).with_name("data").joinpath("wall_plans.yaml")
 
 
 class ScenarioLibrary:
@@ -76,6 +78,88 @@ def build_scenario(name: str, scenarios_file: Path | str = DEFAULT_SCENARIOS_FIL
 WorldModel = ScenarioLibrary
 
 
+class WallPlanLibrary:
+    """Deterministic wall-plan loader (YAML-driven)."""
+
+    def __init__(self, plans_file: Path | str = DEFAULT_WALL_PLANS_FILE):
+        self.plans_file = Path(plans_file)
+        self.payload = _load_wall_plan_payload(self.plans_file)
+
+    def list_plans(self) -> List[str]:
+        return sorted(self.payload["wall_plans"].keys())
+
+    def build_plan(self, name: str) -> WallPlan:
+        plans = self.payload["wall_plans"]
+        key = str(name).strip().lower()
+        if key not in plans:
+            available = ", ".join(sorted(plans.keys()))
+            raise ValueError(f"Unknown wall plan '{name}'. Available: {available}")
+
+        defaults = self.payload.get("defaults", {})
+        default_size = tuple(float(v) for v in defaults.get("block_size", [0.6, 0.9, 0.6]))
+        sequence = plans[key].get("sequence", [])
+        if not isinstance(sequence, list) or not sequence:
+            raise ValueError(f"Wall plan '{key}' has empty or invalid sequence.")
+
+        resolved_positions: Dict[str, Tuple[float, float, float]] = {}
+        placements: List[WallPlacement] = []
+        for idx, item in enumerate(sequence):
+            if not isinstance(item, dict):
+                raise ValueError(f"Wall plan '{key}' has invalid sequence item at index {idx}.")
+
+            block_id = str(item["id"])
+            size = tuple(float(v) for v in item.get("size", default_size))
+            yaw_deg = float(item.get("yaw_deg", 0.0))
+
+            if "absolute_position" in item:
+                absolute_position = _vec3(item["absolute_position"])
+                reference_block_id = None
+                relative_offset = (0.0, 0.0, 0.0)
+            else:
+                reference_block_id = str(item.get("relative_to", ""))
+                if not reference_block_id:
+                    raise ValueError(
+                        f"Wall plan '{key}' item '{block_id}' must define either "
+                        "'absolute_position' or 'relative_to'."
+                    )
+                if reference_block_id not in resolved_positions:
+                    raise ValueError(
+                        f"Wall plan '{key}' item '{block_id}' references unknown block "
+                        f"'{reference_block_id}'."
+                    )
+                relative_offset = _vec3(item.get("offset", [0.0, 0.0, 0.0]))
+                ref = np.asarray(resolved_positions[reference_block_id], dtype=float)
+                absolute_position = tuple((ref + np.asarray(relative_offset, dtype=float)).tolist())
+
+            resolved_positions[block_id] = absolute_position
+            placements.append(
+                WallPlacement(
+                    block_id=block_id,
+                    reference_block_id=reference_block_id,
+                    absolute_position=absolute_position,
+                    relative_offset=relative_offset,
+                    yaw_deg=yaw_deg,
+                    size=size,
+                )
+            )
+
+        return WallPlan(name=key, placements=tuple(placements))
+
+
+def list_wall_plans(plans_file: Path | str = DEFAULT_WALL_PLANS_FILE) -> List[str]:
+    return WallPlanLibrary(plans_file=plans_file).list_plans()
+
+
+def build_wall_plan(name: str, plans_file: Path | str = DEFAULT_WALL_PLANS_FILE) -> WallPlan:
+    return WallPlanLibrary(plans_file=plans_file).build_plan(name)
+
+
+def _vec3(values: Any) -> Tuple[float, float, float]:
+    if not isinstance(values, (list, tuple)) or len(values) != 3:
+        raise ValueError("Expected exactly 3 values.")
+    return (float(values[0]), float(values[1]), float(values[2]))
+
+
 def _load_yaml_payload(path: Path) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8") as fh:
         payload = yaml.safe_load(fh)
@@ -83,6 +167,16 @@ def _load_yaml_payload(path: Path) -> Dict[str, Any]:
         raise ValueError(f"Invalid scenarios YAML: {path}")
     if not isinstance(payload["scenarios"], dict):
         raise ValueError("'scenarios' must be a mapping")
+    return payload
+
+
+def _load_wall_plan_payload(path: Path) -> Dict[str, Any]:
+    with path.open("r", encoding="utf-8") as fh:
+        payload = yaml.safe_load(fh)
+    if not isinstance(payload, dict) or "wall_plans" not in payload:
+        raise ValueError(f"Invalid wall plans YAML: {path}")
+    if not isinstance(payload["wall_plans"], dict):
+        raise ValueError("'wall_plans' must be a mapping")
     return payload
 
 

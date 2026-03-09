@@ -69,5 +69,25 @@ class TrajectoryResult:
     diagnostics: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class WallPlacement:
+    """Single resolved wall placement target."""
+
+    block_id: str
+    reference_block_id: Optional[str]
+    absolute_position: Tuple[float, float, float]
+    relative_offset: Tuple[float, float, float]
+    yaw_deg: float
+    size: Tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class WallPlan:
+    """Ordered wall assembly plan."""
+
+    name: str
+    placements: Tuple[WallPlacement, ...]
+
+
 # Late import type hints only.
 from .spline import BSplinePath  # noqa: E402

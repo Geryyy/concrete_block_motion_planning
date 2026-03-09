@@ -1,0 +1,19 @@
+joint_names:
+  - "joint_1"
+  - "joint_2"
+  - "joint_3"
+  - "joint_4"
+  - "joint_5"
+  - "joint_6"
+
+configurations:
+  scan_left:
+    positions: [0.8, -0.4, 0.3, 0.0, 0.2, 0.0]
+    duration_s: 4.0
+  scan_center:
+    positions: [0.0, -0.2, 0.5, 0.0, 0.1, 0.0]
+    duration_s: 4.0
+  scan_right:
+    positions: [-0.8, -0.4, 0.3, 0.0, 0.2, 0.0]
+    duration_s: 4.0
+

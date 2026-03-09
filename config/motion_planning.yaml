@@ -2,5 +2,32 @@ concrete_block_motion_planning_node:
   ros__parameters:
     default_geometric_method: "POWELL"
     default_trajectory_method: "ACADOS_PATH_FOLLOWING"
-    path_interpolation_points: 20
-    fallback_segment_dt_s: 0.2
+    path_interpolation_points: 81
+    moving_block_size: [0.6, 0.9, 0.6]
+    geometric_optimized_params_file: ""
+
+    trajectory:
+      default_horizon_steps: 120
+      fast_horizon_steps: 70
+      ctrl_points_min: 4
+      ctrl_points_max: 10
+      acados_verbose: false
+
+    # Execution is disabled by design in this planning-only node.
+    # Trajectories must be dispatched to A2B servers.
+    execution:
+      enabled: false
+
+    named_configurations_file: ""
+    default_named_configuration_joint_names:
+      - "joint_1"
+      - "joint_2"
+      - "joint_3"
+      - "joint_4"
+      - "joint_5"
+      - "joint_6"
+    named_configuration_default_duration_s: 4.0
+
+    wall_plan_file: ""
+    default_wall_plan_name: "basic_interlocking_3_2"
+    wall_plan_frame_id: "world"

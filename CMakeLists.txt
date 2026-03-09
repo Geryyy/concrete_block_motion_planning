@@ -17,13 +17,18 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/PlanGeometricPath.srv"
   "srv/ComputeTrajectory.srv"
   "srv/ExecuteTrajectory.srv"
-  "srv/PlanBlockMotion.srv"
-  "srv/ExecutePlannedMotion.srv"
+  "srv/ExecuteNamedConfiguration.srv"
+  "srv/GetNextAssemblyTask.srv"
   DEPENDENCIES geometry_msgs nav_msgs std_msgs builtin_interfaces trajectory_msgs
 )
 
 install(PROGRAMS
   scripts/motion_planning_node.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY
+  scripts/cbmp
   DESTINATION lib/${PROJECT_NAME}
 )
 

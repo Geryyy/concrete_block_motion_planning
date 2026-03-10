@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import List, Tuple
 
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,10 @@ def declare_and_load_config(node: Node) -> NodeConfig:
     node.declare_parameter("execution.enabled", False)
 
     node.declare_parameter("named_configurations_file", "")
-    node.declare_parameter("default_named_configuration_joint_names", [])
+    node.declare_parameter(
+        "default_named_configuration_joint_names",
+        Parameter.Type.STRING_ARRAY,
+    )
     node.declare_parameter("named_configuration_default_duration_s", 4.0)
 
     node.declare_parameter("wall_plan_file", "")

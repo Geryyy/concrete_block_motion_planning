@@ -22,7 +22,7 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="false"),
-            DeclareLaunchArgument("params_file", default_value=config_file),
+            DeclareLaunchArgument("motion_planning_params_file", default_value=config_file),
             DeclareLaunchArgument("named_configurations_file", default_value=named_cfg_file),
             DeclareLaunchArgument("wall_plan_file", default_value=wall_plan_file),
             DeclareLaunchArgument(
@@ -35,7 +35,7 @@ def generate_launch_description():
                 name="concrete_block_motion_planning_node",
                 output="screen",
                 parameters=[
-                    LaunchConfiguration("params_file"),
+                    LaunchConfiguration("motion_planning_params_file"),
                     {"named_configurations_file": LaunchConfiguration("named_configurations_file")},
                     {"wall_plan_file": LaunchConfiguration("wall_plan_file")},
                     {

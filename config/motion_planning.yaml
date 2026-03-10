@@ -14,9 +14,11 @@ concrete_block_motion_planning_node:
       acados_verbose: false
 
     # Execution is disabled by design in this planning-only node.
-    # Trajectories must be dispatched to A2B servers.
+    # Enable only when a trajectory consumer (e.g. trajectory_forward_controller)
+    # is active on execution.trajectory_topic.
     execution:
       enabled: false
+      trajectory_topic: "/trajectory_controllers/joint_trajectory"
 
     named_configurations_file: ""
     default_named_configuration_joint_names:

@@ -29,6 +29,11 @@ def generate_launch_description():
                 "geometric_optimized_params_file",
                 default_value=optimized_params_file,
             ),
+            DeclareLaunchArgument("execution_enabled", default_value="false"),
+            DeclareLaunchArgument(
+                "execution_trajectory_topic",
+                default_value="/trajectory_controllers/joint_trajectory",
+            ),
             Node(
                 package="concrete_block_motion_planning",
                 executable="motion_planning_node.py",
@@ -41,6 +46,12 @@ def generate_launch_description():
                     {
                         "geometric_optimized_params_file": LaunchConfiguration(
                             "geometric_optimized_params_file"
+                        )
+                    },
+                    {"execution.enabled": LaunchConfiguration("execution_enabled")},
+                    {
+                        "execution.trajectory_topic": LaunchConfiguration(
+                            "execution_trajectory_topic"
                         )
                     },
                     {"use_sim_time": LaunchConfiguration("use_sim_time")},

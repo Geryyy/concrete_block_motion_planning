@@ -20,6 +20,7 @@ class NodeConfig:
     traj_ctrl_pts_max: int
     traj_acados_verbose: bool
     execution_enabled: bool
+    execution_trajectory_topic: str
     named_configurations_file: str
     default_named_joint_names: List[str]
     named_cfg_default_duration_s: float
@@ -46,6 +47,7 @@ def declare_and_load_config(node: Node) -> NodeConfig:
     node.declare_parameter("trajectory.ctrl_points_max", 10)
     node.declare_parameter("trajectory.acados_verbose", False)
     node.declare_parameter("execution.enabled", False)
+    node.declare_parameter("execution.trajectory_topic", "/trajectory_controllers/joint_trajectory")
 
     node.declare_parameter("named_configurations_file", "")
     node.declare_parameter(
@@ -73,6 +75,7 @@ def declare_and_load_config(node: Node) -> NodeConfig:
         traj_ctrl_pts_max=int(node.get_parameter("trajectory.ctrl_points_max").value),
         traj_acados_verbose=bool(node.get_parameter("trajectory.acados_verbose").value),
         execution_enabled=bool(node.get_parameter("execution.enabled").value),
+        execution_trajectory_topic=str(node.get_parameter("execution.trajectory_topic").value),
         named_configurations_file=str(node.get_parameter("named_configurations_file").value),
         default_named_joint_names=[
             str(v) for v in node.get_parameter("default_named_configuration_joint_names").value

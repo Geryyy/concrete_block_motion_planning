@@ -24,6 +24,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 install(PROGRAMS
   scripts/motion_planning_node.py
+  scripts/rviz_move_empty_interface.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

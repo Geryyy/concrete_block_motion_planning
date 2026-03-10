@@ -17,6 +17,34 @@ from .types import StoredTrajectory
 
 
 class ServiceHandlersMixin:
+    def _dispatch_trajectory(self, trajectory, trajectory_id: str) -> tuple[bool, str]:
+        if not self._execution_enabled:
+            return (
+                False,
+                "Execution disabled (execution.enabled=false).",
+            )
+        if self._trajectory_cmd_pub is None:
+            return (
+                False,
+                "Execution publisher is not initialized.",
+            )
+        if not trajectory.points:
+            return (
+                False,
+                f"Trajectory '{trajectory_id}' has no points.",
+            )
+        if self._trajectory_cmd_pub.get_subscription_count() <= 0:
+            return (
+                False,
+                f"No subscribers on execution topic '{self._execution_trajectory_topic}'.",
+            )
+
+        self._trajectory_cmd_pub.publish(trajectory)
+        return (
+            True,
+            f"Dispatched trajectory '{trajectory_id}' to '{self._execution_trajectory_topic}'.",
+        )
+
     def _handle_plan_geometric(
         self,
         request: PlanGeometricPath.Request,
@@ -176,11 +204,9 @@ class ServiceHandlersMixin:
             response.message = f"Dry-run accepted for '{request.trajectory_id}'."
             return response
 
-        response.success = False
-        response.message = (
-            "Planning-only node: execution is disabled. "
-            "Send this JointTrajectory to an A2B execution server (feed-forward / MPC / jerk) "
-            "outside this node."
+        response.success, response.message = self._dispatch_trajectory(
+            stored.trajectory,
+            request.trajectory_id,
         )
         return response
 
@@ -224,11 +250,10 @@ class ServiceHandlersMixin:
             )
             return response
 
-        response.success = False
+        response.success, dispatch_msg = self._dispatch_trajectory(trajectory, trajectory_id)
         response.message = (
-            f"Named configuration '{cfg_name}' converted to trajectory_id={trajectory_id}, "
-            "but execution is disabled in this planning-only node. "
-            "Dispatch externally to A2B execution backends."
+            f"Named configuration '{cfg_name}' converted to trajectory_id={trajectory_id}. "
+            f"{dispatch_msg}"
         )
         return response
 

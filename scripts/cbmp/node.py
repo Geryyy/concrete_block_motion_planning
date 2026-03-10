@@ -34,6 +34,8 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
         self._bind_config_aliases()
 
         self._status_pub = self.create_publisher(String, "~/trajectory_backend_status", 10)
+        self._trajectory_cmd_pub = None
+        self._initialize_execution_io()
 
         self._initialize_runtime_and_data()
         self._register_services()
@@ -119,6 +121,7 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
         self._traj_ctrl_pts_max = self._cfg.traj_ctrl_pts_max
         self._traj_acados_verbose = self._cfg.traj_acados_verbose
         self._execution_enabled = self._cfg.execution_enabled
+        self._execution_trajectory_topic = self._cfg.execution_trajectory_topic.strip()
 
         self._named_configurations_file = self._cfg.named_configurations_file
         self._default_named_joint_names = list(self._cfg.default_named_joint_names)
@@ -147,6 +150,21 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
                 f"wall_plans={len(self._wall_plans)}; "
                 f"execution_enabled={self._execution_enabled}"
             ),
+        )
+
+    def _initialize_execution_io(self) -> None:
+        if not self._execution_enabled:
+            return
+        if not self._execution_trajectory_topic:
+            self.get_logger().warn(
+                "execution.enabled=true but execution.trajectory_topic is empty; execution disabled."
+            )
+            self._execution_enabled = False
+            return
+        self._trajectory_cmd_pub = self.create_publisher(
+            JointTrajectory,
+            self._execution_trajectory_topic,
+            10,
         )
 
     def _register_services(self) -> None:
@@ -184,6 +202,7 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
             f"default_trajectory_method={self._default_trajectory_method} | "
             f"planning_runtime_ready={self._planning_runtime_ready} | "
             f"execution_enabled={self._execution_enabled} | "
+            f"execution_topic={self._execution_trajectory_topic or '<none>'} | "
             f"named_configurations={len(self._named_configurations)} | "
             f"wall_plans={len(self._wall_plans)}"
         )

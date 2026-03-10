@@ -394,6 +394,7 @@ python3 -m pip install --user -r requirements-benchmark.txt
 
 ### Optional/system dependencies
 
+- `python-fcl`: required for geometric/world-model collision checks (`fcl` Python module).
 - `pinocchio`: required by trajectory and mechanics modules (typically installed via system package manager/robotics stack).
 - `ompl` Python bindings: optional, only needed for `OMPL-RRT` benchmark method.
 - `vpsto`: optional, only needed for `VP-STO` benchmark method.

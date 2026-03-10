@@ -62,8 +62,10 @@ Outputs:
 
 Capability notes:
 - `dry_run=true`: validates and returns success.
-- Non-dry-run execution is intentionally disabled in this node (planning-only design).
-- Real execution must be done by an external execution server/backend.
+- `dry_run=false`: optional direct dispatch to a ROS trajectory consumer if enabled:
+  - `execution.enabled=true`
+  - `execution.trajectory_topic` has an active subscriber
+- Otherwise returns failure with a clear dispatch reason.
 
 ### `~/execute_named_configuration` (`ExecuteNamedConfiguration`)
 Purpose:
@@ -81,7 +83,7 @@ Outputs:
 
 Capability notes:
 - Creates a trajectory from preloaded named configurations.
-- Non-dry-run execution remains disabled here (same planning-only behavior).
+- Non-dry-run follows the same optional direct-dispatch behavior as `~/execute_trajectory`.
 
 ### `~/get_next_assembly_task` (`GetNextAssemblyTask`)
 Purpose:

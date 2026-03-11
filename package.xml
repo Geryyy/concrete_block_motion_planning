@@ -17,6 +17,10 @@
   <depend>builtin_interfaces</depend>
   <depend>trajectory_msgs</depend>
   <depend>tf2_ros</depend>
+  <depend>control_msgs</depend>
+  <depend>controller_manager_msgs</depend>
+  <depend>action_msgs</depend>
+  <depend>concrete_block_perception</depend>
 
   <exec_depend>rosidl_default_runtime</exec_depend>
 

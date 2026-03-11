@@ -20,7 +20,15 @@ class NodeConfig:
     traj_ctrl_pts_max: int
     traj_acados_verbose: bool
     execution_enabled: bool
+    execution_backend: str
     execution_trajectory_topic: str
+    execution_action_name: str
+    execution_result_timeout_s: float
+    execution_switch_controller: bool
+    execution_switch_service: str
+    execution_activate_controller: str
+    execution_deactivate_after_execution: bool
+    world_model_get_coarse_blocks_service: str
     named_configurations_file: str
     default_named_joint_names: List[str]
     named_cfg_default_duration_s: float
@@ -47,7 +55,21 @@ def declare_and_load_config(node: Node) -> NodeConfig:
     node.declare_parameter("trajectory.ctrl_points_max", 10)
     node.declare_parameter("trajectory.acados_verbose", False)
     node.declare_parameter("execution.enabled", False)
+    node.declare_parameter("execution.backend", "topic")
     node.declare_parameter("execution.trajectory_topic", "/trajectory_controllers/joint_trajectory")
+    node.declare_parameter(
+        "execution.action_name",
+        "/trajectory_controller_a2b/follow_joint_trajectory",
+    )
+    node.declare_parameter("execution.result_timeout_s", 120.0)
+    node.declare_parameter("execution.switch_controller", False)
+    node.declare_parameter("execution.switch_service", "/controller_manager/switch_controller")
+    node.declare_parameter("execution.activate_controller", "trajectory_controller_a2b")
+    node.declare_parameter("execution.deactivate_after_execution", True)
+    node.declare_parameter(
+        "world_model.get_coarse_blocks_service",
+        "/world_model_node/get_coarse_blocks",
+    )
 
     node.declare_parameter("named_configurations_file", "")
     node.declare_parameter(
@@ -75,7 +97,19 @@ def declare_and_load_config(node: Node) -> NodeConfig:
         traj_ctrl_pts_max=int(node.get_parameter("trajectory.ctrl_points_max").value),
         traj_acados_verbose=bool(node.get_parameter("trajectory.acados_verbose").value),
         execution_enabled=bool(node.get_parameter("execution.enabled").value),
+        execution_backend=str(node.get_parameter("execution.backend").value),
         execution_trajectory_topic=str(node.get_parameter("execution.trajectory_topic").value),
+        execution_action_name=str(node.get_parameter("execution.action_name").value),
+        execution_result_timeout_s=float(node.get_parameter("execution.result_timeout_s").value),
+        execution_switch_controller=bool(node.get_parameter("execution.switch_controller").value),
+        execution_switch_service=str(node.get_parameter("execution.switch_service").value),
+        execution_activate_controller=str(node.get_parameter("execution.activate_controller").value),
+        execution_deactivate_after_execution=bool(
+            node.get_parameter("execution.deactivate_after_execution").value
+        ),
+        world_model_get_coarse_blocks_service=str(
+            node.get_parameter("world_model.get_coarse_blocks_service").value
+        ),
         named_configurations_file=str(node.get_parameter("named_configurations_file").value),
         default_named_joint_names=[
             str(v) for v in node.get_parameter("default_named_configuration_joint_names").value

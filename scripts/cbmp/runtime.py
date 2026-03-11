@@ -23,6 +23,7 @@ class RuntimeHelpersMixin:
         start_pose: PoseStamped,
         goal_pose: PoseStamped,
         method: str,
+        planning_context: Optional[Dict[str, Any]] = None,
     ) -> StoredGeometricPlan:
         if not self._geometric_runtime_available:
             return StoredGeometricPlan(
@@ -61,6 +62,7 @@ class RuntimeHelpersMixin:
                 method=method,
             )
 
+        planning_context = dict(planning_context or {})
         scene_ok, scene_reason = self._ensure_planner_scene()
         if not scene_ok:
             return StoredGeometricPlan(
@@ -91,14 +93,31 @@ class RuntimeHelpersMixin:
             goal_arr = np.asarray(goal_xyz, dtype=float).reshape(3)
             cfg["initial_vias"] = np.vstack([(1.0 - a) * start_arr + a * goal_arr for a in t])
 
+        scenario_scene = self._planner_scene
+        world_model_note = ""
+        world_blocks = list(planning_context.get("world_model_blocks", []))
+        if world_blocks:
+            built_scene, world_model_note = self._scene_from_world_blocks(world_blocks)
+            if built_scene is not None:
+                scenario_scene = built_scene
+            elif world_model_note:
+                world_model_note = f"{world_model_note}; fallback to base scene"
+
+        goal_normals = self._resolve_goal_approach_normals(
+            start_xyz=start_xyz,
+            goal_xyz=goal_xyz,
+            planning_context=planning_context,
+            world_blocks=world_blocks,
+        )
+
         scenario = Scenario(
-            scene=self._planner_scene,
+            scene=scenario_scene,
             start=start_xyz,
             goal=goal_xyz,
             moving_block_size=self._moving_block_size,
             start_yaw_deg=float(start_yaw),
             goal_yaw_deg=float(goal_yaw),
-            goal_normals=((0.0, 0.0, 1.0),),
+            goal_normals=goal_normals,
         )
 
         try:
@@ -146,6 +165,8 @@ class RuntimeHelpersMixin:
         msg = geo_result.message
         if metric_txt:
             msg = f"{msg} | {metric_txt}"
+        if world_model_note:
+            msg = f"{msg} | {world_model_note}"
 
         return StoredGeometricPlan(
             geometric_plan_id="",
@@ -155,6 +176,98 @@ class RuntimeHelpersMixin:
             method=canonical,
             planner_path=geo_result.path,
         )
+
+    def _scene_from_world_blocks(
+        self,
+        world_blocks: List[Dict[str, Any]],
+    ) -> Tuple[Optional[Any], str]:
+        try:
+            from motion_planning import Scene
+        except Exception as exc:
+            return None, f"cannot import Scene for world model integration: {exc}"
+
+        scene = Scene()
+        added = 0
+        for item in world_blocks:
+            pose = item.get("pose")
+            if pose is None:
+                continue
+            try:
+                position = (
+                    float(pose.position.x),
+                    float(pose.position.y),
+                    float(pose.position.z),
+                )
+                quat = (
+                    float(pose.orientation.x),
+                    float(pose.orientation.y),
+                    float(pose.orientation.z),
+                    float(pose.orientation.w),
+                )
+                oid = str(item.get("id", "")).strip() or None
+                scene.add_block(
+                    size=self._moving_block_size,
+                    position=position,
+                    quat=quat,
+                    object_id=oid,
+                )
+                added += 1
+            except Exception:
+                continue
+        if added <= 0:
+            return None, "world model returned no valid blocks"
+        return scene, f"world_model_blocks_used={added}"
+
+    def _resolve_goal_approach_normals(
+        self,
+        start_xyz: Tuple[float, float, float],
+        goal_xyz: Tuple[float, float, float],
+        planning_context: Dict[str, Any],
+        world_blocks: List[Dict[str, Any]],
+    ) -> Tuple[Tuple[float, float, float], ...]:
+        fallback = ((0.0, 0.0, 1.0),)
+        target_id = str(planning_context.get("target_block_id", "")).strip()
+        reference_id = str(planning_context.get("reference_block_id", "")).strip()
+        if not target_id:
+            return fallback
+
+        target = None
+        reference = None
+        for item in world_blocks:
+            bid = str(item.get("id", "")).strip()
+            if bid == target_id:
+                target = item
+            if bid == reference_id:
+                reference = item
+        if target is None:
+            return fallback
+
+        try:
+            tp = target["pose"].position
+            target_vec = np.array([float(tp.x), float(tp.y), float(tp.z)], dtype=float)
+        except Exception:
+            return fallback
+
+        if reference is not None:
+            try:
+                rp = reference["pose"].position
+                ref_vec = np.array([float(rp.x), float(rp.y), float(rp.z)], dtype=float)
+                n = target_vec - ref_vec
+                n_norm = float(np.linalg.norm(n))
+                if n_norm > 1e-6:
+                    n = n / n_norm
+                    return ((float(n[0]), float(n[1]), float(n[2])), (0.0, 0.0, 1.0))
+            except Exception:
+                pass
+
+        start_arr = np.asarray(start_xyz, dtype=float)
+        goal_arr = np.asarray(goal_xyz, dtype=float)
+        n = goal_arr - start_arr
+        n_norm = float(np.linalg.norm(n))
+        if n_norm <= 1e-6:
+            return fallback
+        n = n / n_norm
+        return ((float(n[0]), float(n[1]), float(n[2])), (0.0, 0.0, 1.0))
 
     def _resolve_path_for_trajectory(
         self,
@@ -187,6 +300,8 @@ class RuntimeHelpersMixin:
         profile = "ACADOS_PATH_FOLLOWING"
         if "FAST" in method_norm:
             profile = "ACADOS_PATH_FOLLOWING_FAST"
+        elif "STABLE" in method_norm or "COMMISSION" in method_norm:
+            profile = "ACADOS_PATH_FOLLOWING_STABLE"
 
         if profile in self._trajectory_optimizers:
             return self._trajectory_optimizers[profile], profile
@@ -202,6 +317,8 @@ class RuntimeHelpersMixin:
         horizon = self._traj_default_horizon
         if profile.endswith("FAST"):
             horizon = self._traj_fast_horizon
+        elif profile.endswith("STABLE"):
+            horizon = int(max(self._traj_default_horizon, self._traj_fast_horizon + 25))
 
         cfg = CartesianPathFollowingConfig(
             urdf_path=Path(self._analytic_cfg.urdf_path),
@@ -852,7 +969,20 @@ class RuntimeHelpersMixin:
 
         if missing:
             return False, f"missing modules: {', '.join(missing)}"
-        return True, "trajectory runtime modules are available"
+        acados_source = os.environ.get("ACADOS_SOURCE_DIR", "").strip()
+        if not acados_source:
+            return (
+                True,
+                "trajectory runtime modules are available "
+                "(ACADOS_SOURCE_DIR is not set; source acados_interface_setup.sh if codegen fails)",
+            )
+        acados_path = Path(acados_source).expanduser()
+        if not acados_path.exists():
+            return (
+                True,
+                f"trajectory modules ok, but ACADOS_SOURCE_DIR '{acados_path}' does not exist",
+            )
+        return True, f"trajectory runtime modules are available (ACADOS_SOURCE_DIR={acados_path})"
 
     def _publish_backend_status(self, state: str, detail: str) -> None:
         msg = String()

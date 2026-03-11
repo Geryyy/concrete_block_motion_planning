@@ -12,6 +12,7 @@ find_package(nav_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(trajectory_msgs REQUIRED)
+find_package(concrete_block_perception REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/PlanGeometricPath.srv"
@@ -19,6 +20,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ExecuteTrajectory.srv"
   "srv/ExecuteNamedConfiguration.srv"
   "srv/GetNextAssemblyTask.srv"
+  "srv/PlanAndComputeTrajectory.srv"
   DEPENDENCIES geometry_msgs nav_msgs std_msgs builtin_interfaces trajectory_msgs
 )
 

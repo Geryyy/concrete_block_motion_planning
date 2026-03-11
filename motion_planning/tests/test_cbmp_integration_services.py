@@ -20,6 +20,7 @@ from concrete_block_motion_planning.srv import (
     ExecuteNamedConfiguration,
     ExecuteTrajectory,
     GetNextAssemblyTask,
+    PlanAndComputeTrajectory,
     PlanGeometricPath,
 )
 
@@ -64,6 +65,7 @@ def test_clean_service_endpoints_are_available(ros_runtime) -> None:
 
     service_specs = [
         (PlanGeometricPath, "plan_geometric_path"),
+        (PlanAndComputeTrajectory, "plan_and_compute_trajectory"),
         (ExecuteTrajectory, "execute_trajectory"),
         (ExecuteNamedConfiguration, "execute_named_configuration"),
         (GetNextAssemblyTask, "get_next_assembly_task"),

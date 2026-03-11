@@ -30,9 +30,29 @@ def generate_launch_description():
                 default_value=optimized_params_file,
             ),
             DeclareLaunchArgument("execution_enabled", default_value="false"),
+            DeclareLaunchArgument("execution_backend", default_value="topic"),
             DeclareLaunchArgument(
                 "execution_trajectory_topic",
                 default_value="/trajectory_controllers/joint_trajectory",
+            ),
+            DeclareLaunchArgument(
+                "execution_action_name",
+                default_value="/trajectory_controller_a2b/follow_joint_trajectory",
+            ),
+            DeclareLaunchArgument("execution_result_timeout_s", default_value="120.0"),
+            DeclareLaunchArgument("execution_switch_controller", default_value="false"),
+            DeclareLaunchArgument(
+                "execution_switch_service",
+                default_value="/controller_manager/switch_controller",
+            ),
+            DeclareLaunchArgument(
+                "execution_activate_controller",
+                default_value="trajectory_controller_a2b",
+            ),
+            DeclareLaunchArgument("execution_deactivate_after_execution", default_value="true"),
+            DeclareLaunchArgument(
+                "world_model_get_coarse_blocks_service",
+                default_value="/world_model_node/get_coarse_blocks",
             ),
             Node(
                 package="concrete_block_motion_planning",
@@ -49,9 +69,33 @@ def generate_launch_description():
                         )
                     },
                     {"execution.enabled": LaunchConfiguration("execution_enabled")},
+                    {"execution.backend": LaunchConfiguration("execution_backend")},
                     {
                         "execution.trajectory_topic": LaunchConfiguration(
                             "execution_trajectory_topic"
+                        )
+                    },
+                    {"execution.action_name": LaunchConfiguration("execution_action_name")},
+                    {"execution.result_timeout_s": LaunchConfiguration("execution_result_timeout_s")},
+                    {
+                        "execution.switch_controller": LaunchConfiguration(
+                            "execution_switch_controller"
+                        )
+                    },
+                    {"execution.switch_service": LaunchConfiguration("execution_switch_service")},
+                    {
+                        "execution.activate_controller": LaunchConfiguration(
+                            "execution_activate_controller"
+                        )
+                    },
+                    {
+                        "execution.deactivate_after_execution": LaunchConfiguration(
+                            "execution_deactivate_after_execution"
+                        )
+                    },
+                    {
+                        "world_model.get_coarse_blocks_service": LaunchConfiguration(
+                            "world_model_get_coarse_blocks_service"
                         )
                     },
                     {"use_sim_time": LaunchConfiguration("use_sim_time")},

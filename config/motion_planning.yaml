@@ -18,7 +18,17 @@ concrete_block_motion_planning_node:
     # is active on execution.trajectory_topic.
     execution:
       enabled: false
+      backend: "topic"
       trajectory_topic: "/trajectory_controllers/joint_trajectory"
+      action_name: "/trajectory_controller_a2b/follow_joint_trajectory"
+      result_timeout_s: 120.0
+      switch_controller: false
+      switch_service: "/controller_manager/switch_controller"
+      activate_controller: "trajectory_controller_a2b"
+      deactivate_after_execution: true
+
+    world_model:
+      get_coarse_blocks_service: "/world_model_node/get_coarse_blocks"
 
     named_configurations_file: ""
     default_named_configuration_joint_names:

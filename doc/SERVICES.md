@@ -48,6 +48,24 @@ Capability notes:
 - Runs trajectory optimization in joint/configuration space.
 - Stores trajectory internally by `trajectory_id`.
 
+### `~/plan_and_compute_trajectory` (`PlanAndComputeTrajectory`)
+Purpose:
+- Convenience API that executes geometric planning and trajectory computation in one call.
+
+Inputs (main):
+- `start_pose`, `goal_pose`
+- Optional task context: `target_block_id`, `reference_block_id`, `use_world_model`
+- `geometric_method`, `geometric_timeout_s`
+- `trajectory_method`, `trajectory_timeout_s`, `validate_dynamics`
+
+Outputs:
+- `success`
+- `geometric_plan_id`
+- `cartesian_path` (`nav_msgs/Path`)
+- `trajectory_id`
+- `trajectory` (`trajectory_msgs/JointTrajectory`)
+- `message`
+
 ### `~/execute_trajectory` (`ExecuteTrajectory`)
 Purpose:
 - Handles execution requests for a stored `trajectory_id`.
@@ -62,9 +80,9 @@ Outputs:
 
 Capability notes:
 - `dry_run=true`: validates and returns success.
-- `dry_run=false`: optional direct dispatch to a ROS trajectory consumer if enabled:
-  - `execution.enabled=true`
-  - `execution.trajectory_topic` has an active subscriber
+- `dry_run=false`: dispatches using configured execution backend if enabled:
+  - topic backend: publish to `execution.trajectory_topic`
+  - action backend: send to `execution.action_name` (`FollowJointTrajectory`)
 - Otherwise returns failure with a clear dispatch reason.
 
 ### `~/execute_named_configuration` (`ExecuteNamedConfiguration`)

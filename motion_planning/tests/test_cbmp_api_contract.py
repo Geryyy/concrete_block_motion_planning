@@ -42,6 +42,9 @@ def test_register_services_exposes_only_clean_api_endpoints() -> None:
         def _handle_compute_trajectory(self):
             pass
 
+        def _handle_plan_and_compute_trajectory(self):
+            pass
+
         def _handle_execute_trajectory(self):
             pass
 
@@ -56,6 +59,7 @@ def test_register_services_exposes_only_clean_api_endpoints() -> None:
 
     assert registrar.paths == [
         "~/plan_geometric_path",
+        "~/plan_and_compute_trajectory",
         "~/compute_trajectory",
         "~/execute_trajectory",
         "~/execute_named_configuration",

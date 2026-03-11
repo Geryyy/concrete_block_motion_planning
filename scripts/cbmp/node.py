@@ -4,14 +4,19 @@ from typing import Any, Dict, List
 
 import rclpy
 from rclpy.node import Node
+from rclpy.action import ActionClient
 from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory
+from control_msgs.action import FollowJointTrajectory
+from controller_manager_msgs.srv import SwitchController
+from concrete_block_perception.srv import GetCoarseBlocks
 
 from concrete_block_motion_planning.srv import (
     ComputeTrajectory,
     ExecuteNamedConfiguration,
     ExecuteTrajectory,
     GetNextAssemblyTask,
+    PlanAndComputeTrajectory,
     PlanGeometricPath,
 )
 
@@ -35,7 +40,11 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
 
         self._status_pub = self.create_publisher(String, "~/trajectory_backend_status", 10)
         self._trajectory_cmd_pub = None
+        self._trajectory_action_client = None
+        self._switch_controller_client = None
+        self._get_coarse_blocks_client = None
         self._initialize_execution_io()
+        self._initialize_world_model_io()
 
         self._initialize_runtime_and_data()
         self._register_services()
@@ -121,7 +130,17 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
         self._traj_ctrl_pts_max = self._cfg.traj_ctrl_pts_max
         self._traj_acados_verbose = self._cfg.traj_acados_verbose
         self._execution_enabled = self._cfg.execution_enabled
+        self._execution_backend = self._cfg.execution_backend.strip().lower()
         self._execution_trajectory_topic = self._cfg.execution_trajectory_topic.strip()
+        self._execution_action_name = self._cfg.execution_action_name.strip()
+        self._execution_result_timeout_s = max(1.0, float(self._cfg.execution_result_timeout_s))
+        self._execution_switch_controller = bool(self._cfg.execution_switch_controller)
+        self._execution_switch_service = self._cfg.execution_switch_service.strip()
+        self._execution_activate_controller = self._cfg.execution_activate_controller.strip()
+        self._execution_deactivate_after_execution = bool(self._cfg.execution_deactivate_after_execution)
+        self._world_model_get_coarse_blocks_service = (
+            self._cfg.world_model_get_coarse_blocks_service.strip()
+        )
 
         self._named_configurations_file = self._cfg.named_configurations_file
         self._default_named_joint_names = list(self._cfg.default_named_joint_names)
@@ -155,6 +174,37 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
     def _initialize_execution_io(self) -> None:
         if not self._execution_enabled:
             return
+        if self._execution_backend == "action":
+            if not self._execution_action_name:
+                self.get_logger().warn(
+                    "execution.enabled=true, backend=action but execution.action_name is empty; execution disabled."
+                )
+                self._execution_enabled = False
+                return
+            self._trajectory_action_client = ActionClient(
+                self,
+                FollowJointTrajectory,
+                self._execution_action_name,
+            )
+            if self._execution_switch_controller:
+                if not self._execution_switch_service:
+                    self.get_logger().warn(
+                        "execution.switch_controller=true but execution.switch_service is empty; controller switching disabled."
+                    )
+                    self._execution_switch_controller = False
+                else:
+                    self._switch_controller_client = self.create_client(
+                        SwitchController,
+                        self._execution_switch_service,
+                    )
+            return
+
+        if self._execution_backend != "topic":
+            self.get_logger().warn(
+                f"Unknown execution.backend '{self._execution_backend}'. Falling back to topic backend."
+            )
+            self._execution_backend = "topic"
+
         if not self._execution_trajectory_topic:
             self.get_logger().warn(
                 "execution.enabled=true but execution.trajectory_topic is empty; execution disabled."
@@ -167,12 +217,25 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
             10,
         )
 
+    def _initialize_world_model_io(self) -> None:
+        if not self._world_model_get_coarse_blocks_service:
+            return
+        self._get_coarse_blocks_client = self.create_client(
+            GetCoarseBlocks,
+            self._world_model_get_coarse_blocks_service,
+        )
+
     def _register_services(self) -> None:
         # New stage-split services
         self._plan_geo_srv = self.create_service(
             PlanGeometricPath,
             "~/plan_geometric_path",
             self._handle_plan_geometric,
+        )
+        self._plan_and_compute_srv = self.create_service(
+            PlanAndComputeTrajectory,
+            "~/plan_and_compute_trajectory",
+            self._handle_plan_and_compute_trajectory,
         )
         self._compute_traj_srv = self.create_service(
             ComputeTrajectory,
@@ -202,6 +265,8 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
             f"default_trajectory_method={self._default_trajectory_method} | "
             f"planning_runtime_ready={self._planning_runtime_ready} | "
             f"execution_enabled={self._execution_enabled} | "
+            f"execution_backend={self._execution_backend} | "
+            f"execution_action={self._execution_action_name or '<none>'} | "
             f"execution_topic={self._execution_trajectory_topic or '<none>'} | "
             f"named_configurations={len(self._named_configurations)} | "
             f"wall_plans={len(self._wall_plans)}"

@@ -13,7 +13,12 @@ from rclpy.time import Time
 from std_msgs.msg import Bool
 from tf2_ros import Buffer, TransformException, TransformListener
 
-from concrete_block_motion_planning.srv import ComputeTrajectory, ExecuteTrajectory, PlanGeometricPath
+from concrete_block_motion_planning.srv import (
+    ComputeTrajectory,
+    ExecuteTrajectory,
+    PlanAndComputeTrajectory,
+    PlanGeometricPath,
+)
 
 
 class RvizMoveEmptyInterface(Node):
@@ -32,9 +37,14 @@ class RvizMoveEmptyInterface(Node):
             "/concrete_block_motion_planning_node/compute_trajectory",
         )
         self.declare_parameter(
+            "combined_service",
+            "/concrete_block_motion_planning_node/plan_and_compute_trajectory",
+        )
+        self.declare_parameter(
             "execute_service",
             "/concrete_block_motion_planning_node/execute_trajectory",
         )
+        self.declare_parameter("use_combined_service", True)
         self.declare_parameter("geometric_method", "")
         self.declare_parameter("trajectory_method", "")
         self.declare_parameter("dry_run", False)
@@ -47,6 +57,7 @@ class RvizMoveEmptyInterface(Node):
         self._tool_frame = str(self.get_parameter("tool_frame").value)
         self._geometric_method = str(self.get_parameter("geometric_method").value)
         self._trajectory_method = str(self.get_parameter("trajectory_method").value)
+        self._use_combined_service = bool(self.get_parameter("use_combined_service").value)
         self._dry_run = bool(self.get_parameter("dry_run").value)
         self._enable_topic = str(self.get_parameter("enable_topic").value)
         self._require_enable = bool(self.get_parameter("require_enable").value)
@@ -68,6 +79,10 @@ class RvizMoveEmptyInterface(Node):
         self._compute_client = self.create_client(
             ComputeTrajectory,
             str(self.get_parameter("compute_service").value),
+        )
+        self._combined_client = self.create_client(
+            PlanAndComputeTrajectory,
+            str(self.get_parameter("combined_service").value),
         )
         self._execute_client = self.create_client(
             ExecuteTrajectory,
@@ -92,6 +107,7 @@ class RvizMoveEmptyInterface(Node):
             "RViz move-empty interface ready | "
             f"goal_topic={self._goal_topic} | world_frame={self._world_frame} | "
             f"tool_frame={self._tool_frame} | dry_run={self._dry_run} | "
+            f"use_combined_service={self._use_combined_service} | "
             f"require_enable={self._require_enable} | enable_topic={self._enable_topic} | "
             f"fallback_direct_path={self._fallback_direct_path_on_geometric_failure}"
         )
@@ -138,21 +154,20 @@ class RvizMoveEmptyInterface(Node):
         goal_pose.header.frame_id = self._world_frame
         goal_pose.pose = msg.pose
 
-        if not self._plan_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn("Plan service unavailable.")
-            return
-        if not self._compute_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn("Compute trajectory service unavailable.")
-            return
+        if self._use_combined_service:
+            if not self._combined_client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().warn("Combined plan+compute service unavailable.")
+                return
+        else:
+            if not self._plan_client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().warn("Plan service unavailable.")
+                return
+            if not self._compute_client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().warn("Compute trajectory service unavailable.")
+                return
         if not self._execute_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().warn("Execute trajectory service unavailable.")
             return
-
-        req = PlanGeometricPath.Request()
-        req.start_pose = start_pose
-        req.goal_pose = goal_pose
-        if self._geometric_method:
-            req.method = self._geometric_method
 
         self._pending_start_pose = start_pose
         self._pending_goal_pose = goal_pose
@@ -163,8 +178,54 @@ class RvizMoveEmptyInterface(Node):
             f"goal=({goal_pose.pose.position.x:.2f},{goal_pose.pose.position.y:.2f},"
             f"{goal_pose.pose.position.z:.2f})"
         )
+        if self._use_combined_service:
+            req = PlanAndComputeTrajectory.Request()
+            req.start_pose = start_pose
+            req.goal_pose = goal_pose
+            req.use_world_model = True
+            req.validate_dynamics = True
+            req.geometric_timeout_s = 5.0
+            req.trajectory_timeout_s = 10.0
+            if self._geometric_method:
+                req.geometric_method = self._geometric_method
+            if self._trajectory_method:
+                req.trajectory_method = self._trajectory_method
+            future = self._combined_client.call_async(req)
+            future.add_done_callback(self._on_combined_done)
+            return
+
+        req = PlanGeometricPath.Request()
+        req.start_pose = start_pose
+        req.goal_pose = goal_pose
+        if self._geometric_method:
+            req.method = self._geometric_method
         future = self._plan_client.call_async(req)
         future.add_done_callback(self._on_plan_done)
+
+    def _on_combined_done(self, future) -> None:
+        try:
+            res = future.result()
+        except Exception as exc:  # pragma: no cover - runtime safety
+            self._busy = False
+            self.get_logger().error(f"Combined plan+compute call failed: {exc}")
+            return
+        if res is None or not res.success:
+            msg = "<no response>" if res is None else res.message
+            if self._should_fallback_to_direct_path(msg):
+                self.get_logger().warn(
+                    f"Combined service failed ({msg}); falling back to direct-path trajectory compute."
+                )
+                self._call_compute_direct_path()
+                return
+            self._busy = False
+            self.get_logger().warn(f"Combined service failed: {msg}")
+            return
+
+        req = ExecuteTrajectory.Request()
+        req.trajectory_id = res.trajectory_id
+        req.dry_run = self._dry_run
+        future3 = self._execute_client.call_async(req)
+        future3.add_done_callback(self._on_execute_done)
 
     def _on_plan_done(self, future) -> None:
         try:

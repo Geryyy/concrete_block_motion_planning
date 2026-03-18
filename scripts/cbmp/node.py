@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory
 from control_msgs.action import FollowJointTrajectory
@@ -34,7 +35,7 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
         self._cfg: NodeConfig = declare_and_load_config(self)
         self._state = MotionPlanningState()
 
-        # Keep legacy attribute names used by mixins while config/state are explicit.
+        # Bind mixin-facing attribute views while the node is split across helper classes.
         self._bind_state_aliases()
         self._bind_config_aliases()
 
@@ -43,8 +44,11 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
         self._trajectory_action_client = None
         self._switch_controller_client = None
         self._get_coarse_blocks_client = None
+        self._robot_description_sub = None
+        self._robot_description_xml = ""
         self._initialize_execution_io()
         self._initialize_world_model_io()
+        self._initialize_robot_description_io()
 
         self._initialize_runtime_and_data()
         self._register_services()
@@ -138,6 +142,7 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
         self._execution_switch_service = self._cfg.execution_switch_service.strip()
         self._execution_activate_controller = self._cfg.execution_activate_controller.strip()
         self._execution_deactivate_after_execution = bool(self._cfg.execution_deactivate_after_execution)
+        self._robot_description_topic = self._cfg.robot_description_topic.strip()
         self._world_model_get_coarse_blocks_service = (
             self._cfg.world_model_get_coarse_blocks_service.strip()
         )
@@ -224,6 +229,32 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
             GetCoarseBlocks,
             self._world_model_get_coarse_blocks_service,
         )
+
+    def _initialize_robot_description_io(self) -> None:
+        if not self._robot_description_topic:
+            return
+        qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._robot_description_sub = self.create_subscription(
+            String,
+            self._robot_description_topic,
+            self._on_robot_description,
+            qos,
+        )
+
+    def _on_robot_description(self, msg: String) -> None:
+        xml = str(msg.data)
+        if not xml or xml == self._robot_description_xml:
+            return
+        self._robot_description_xml = xml
+        self.get_logger().info(
+            f"Received robot_description from '{self._robot_description_topic}'."
+        )
+        self._initialize_planning_runtime()
 
     def _register_services(self) -> None:
         # New stage-split services

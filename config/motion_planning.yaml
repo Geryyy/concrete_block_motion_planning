@@ -1,6 +1,8 @@
 concrete_block_motion_planning_node:
   ros__parameters:
     default_geometric_method: "POWELL"
+    # Concrete-block stack keeps its split pipeline:
+    # geometric path planning + acados-based path-following trajectory OCP.
     default_trajectory_method: "ACADOS_PATH_FOLLOWING"
     path_interpolation_points: 81
     moving_block_size: [0.6, 0.9, 0.6]
@@ -24,20 +26,22 @@ concrete_block_motion_planning_node:
       result_timeout_s: 120.0
       switch_controller: false
       switch_service: "/controller_manager/switch_controller"
-      activate_controller: "trajectory_controller_a2b"
+      activate_controller: "trajectory_controllers"
       deactivate_after_execution: true
+
+    robot_description_topic: "/robot_description_full"
 
     world_model:
       get_coarse_blocks_service: "/world_model_node/get_coarse_blocks"
 
     named_configurations_file: ""
     default_named_configuration_joint_names:
-      - "joint_1"
-      - "joint_2"
-      - "joint_3"
-      - "joint_4"
-      - "joint_5"
-      - "joint_6"
+      - "theta1_slewing_joint"
+      - "theta2_boom_joint"
+      - "theta3_arm_joint"
+      - "q4_big_telescope"
+      - "theta8_rotator_joint"
+      - "q9_left_rail_joint"
     named_configuration_default_duration_s: 4.0
 
     wall_plan_file: ""

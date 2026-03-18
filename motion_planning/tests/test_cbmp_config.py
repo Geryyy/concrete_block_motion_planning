@@ -40,7 +40,16 @@ def test_declare_and_load_config_defaults() -> None:
     assert cfg.path_interpolation_points == 81
     assert cfg.moving_block_size == (0.6, 0.9, 0.6)
     assert cfg.execution_enabled is False
-    assert cfg.default_named_joint_names == []
+    assert cfg.execution_backend == "topic"
+    assert cfg.execution_activate_controller == "trajectory_controllers"
+    assert cfg.default_named_joint_names == [
+        "theta1_slewing_joint",
+        "theta2_boom_joint",
+        "theta3_arm_joint",
+        "q4_big_telescope",
+        "theta8_rotator_joint",
+        "q9_left_rail_joint",
+    ]
     assert cfg.default_wall_plan_name == "basic_interlocking_3_2"
     assert cfg.wall_plan_frame_id == "world"
 

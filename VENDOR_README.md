@@ -597,10 +597,13 @@ cd ../../../..
 
 ### 5) Activate runtime environment
 
-Use the package helper script:
+The devcontainer already exports the required acados environment variables. If you are working outside the container, set these variables manually before running the examples:
 
 ```bash
-source acados_interface_setup.sh
+export ACADOS_SOURCE_DIR=/opt/acados
+export LD_LIBRARY_PATH="$ACADOS_SOURCE_DIR/lib:${LD_LIBRARY_PATH:-}"
+export PYTHONPATH="$ACADOS_SOURCE_DIR/interfaces/acados_template:$PYTHONPATH"
+export PATH="$ACADOS_SOURCE_DIR/bin:$PATH"
 ```
 
 This sets:
@@ -627,7 +630,7 @@ Notes:
 
 - `ACADOS_SOURCE_DIR` should point to a built acados tree containing `lib/link_libs.json`.
 - If `t_renderer` is missing, build it from `acados/interfaces/acados_template/tera_renderer`.
-- Run `source acados_interface_setup.sh` (not `bash acados_interface_setup.sh`) so exports persist in the current shell.
+- In the devcontainer, these environment variables are set in `.devcontainer/Dockerfile.vscode`.
 - `motion_planning/trajectory/crane_acados_ocp_setup.py` now prefers the repository-local `acados/` checkout when present, to avoid template/runtime mismatches.
 
 ## Run Trajectory Optimization + Visualization
@@ -635,7 +638,6 @@ Notes:
 Generate a **configuration-space path-following** trajectory (B-spline path with progress states `s, sdot` and progress acceleration input `v = sddot`) and save plot + trajectory artifact locally:
 
 ```bash
-source acados_interface_setup.sh
 conda run -n mp_env python motion_planning/trajectory/run_crane_acados_ocp_example.py \
   --traj-out ./crane_acados_ocp_trajectory.npz \
   --plot-out ./crane_acados_ocp_example.png

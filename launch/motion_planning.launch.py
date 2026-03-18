@@ -7,23 +7,48 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     config_file = PathJoinSubstitution(
-        [FindPackageShare("concrete_block_motion_planning"), "config", "motion_planning.yaml"]
+        [
+            FindPackageShare("concrete_block_motion_planning"),
+            "config",
+            "motion_planning.yaml",
+        ]
     )
     named_cfg_file = PathJoinSubstitution(
-        [FindPackageShare("concrete_block_motion_planning"), "config", "named_configurations.yaml"]
+        [
+            FindPackageShare("concrete_block_motion_planning"),
+            "config",
+            "named_configurations.yaml",
+        ]
     )
     wall_plan_file = PathJoinSubstitution(
-        [FindPackageShare("concrete_block_motion_planning"), "motion_planning", "data", "wall_plans.yaml"]
+        [
+            FindPackageShare("concrete_block_motion_planning"),
+            "motion_planning",
+            "data",
+            "wall_plans.yaml",
+        ]
     )
     optimized_params_file = PathJoinSubstitution(
-        [FindPackageShare("concrete_block_motion_planning"), "motion_planning", "data", "optimized_params.yaml"]
+        [
+            FindPackageShare("concrete_block_motion_planning"),
+            "motion_planning",
+            "data",
+            "optimized_params.yaml",
+        ]
     )
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="false"),
-            DeclareLaunchArgument("motion_planning_params_file", default_value=config_file),
-            DeclareLaunchArgument("named_configurations_file", default_value=named_cfg_file),
+            DeclareLaunchArgument(
+                "motion_planning_params_file", default_value=config_file
+            ),
+            DeclareLaunchArgument(
+                "default_trajectory_method", default_value="ACADOS_PATH_FOLLOWING"
+            ),
+            DeclareLaunchArgument(
+                "named_configurations_file", default_value=named_cfg_file
+            ),
             DeclareLaunchArgument("wall_plan_file", default_value=wall_plan_file),
             DeclareLaunchArgument(
                 "geometric_optimized_params_file",
@@ -47,9 +72,11 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "execution_activate_controller",
-                default_value="trajectory_controller_a2b",
+                default_value="trajectory_controllers",
             ),
-            DeclareLaunchArgument("execution_deactivate_after_execution", default_value="true"),
+            DeclareLaunchArgument(
+                "execution_deactivate_after_execution", default_value="true"
+            ),
             DeclareLaunchArgument(
                 "world_model_get_coarse_blocks_service",
                 default_value="/world_model_node/get_coarse_blocks",
@@ -61,7 +88,16 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     LaunchConfiguration("motion_planning_params_file"),
-                    {"named_configurations_file": LaunchConfiguration("named_configurations_file")},
+                    {
+                        "default_trajectory_method": LaunchConfiguration(
+                            "default_trajectory_method"
+                        )
+                    },
+                    {
+                        "named_configurations_file": LaunchConfiguration(
+                            "named_configurations_file"
+                        )
+                    },
                     {"wall_plan_file": LaunchConfiguration("wall_plan_file")},
                     {
                         "geometric_optimized_params_file": LaunchConfiguration(
@@ -75,14 +111,26 @@ def generate_launch_description():
                             "execution_trajectory_topic"
                         )
                     },
-                    {"execution.action_name": LaunchConfiguration("execution_action_name")},
-                    {"execution.result_timeout_s": LaunchConfiguration("execution_result_timeout_s")},
+                    {
+                        "execution.action_name": LaunchConfiguration(
+                            "execution_action_name"
+                        )
+                    },
+                    {
+                        "execution.result_timeout_s": LaunchConfiguration(
+                            "execution_result_timeout_s"
+                        )
+                    },
                     {
                         "execution.switch_controller": LaunchConfiguration(
                             "execution_switch_controller"
                         )
                     },
-                    {"execution.switch_service": LaunchConfiguration("execution_switch_service")},
+                    {
+                        "execution.switch_service": LaunchConfiguration(
+                            "execution_switch_service"
+                        )
+                    },
                     {
                         "execution.activate_controller": LaunchConfiguration(
                             "execution_activate_controller"

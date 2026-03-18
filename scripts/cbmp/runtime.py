@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -31,8 +32,7 @@ class RuntimeHelpersMixin:
                 path=NavPath(),
                 success=False,
                 message=(
-                    "Geometric backend unavailable: "
-                    f"{self._geometric_runtime_reason}"
+                    f"Geometric backend unavailable: {self._geometric_runtime_reason}"
                 ),
                 method=method,
             )
@@ -91,7 +91,9 @@ class RuntimeHelpersMixin:
             t = np.linspace(0.0, 1.0, n_vias + 2, dtype=float)[1:-1]
             start_arr = np.asarray(start_xyz, dtype=float).reshape(3)
             goal_arr = np.asarray(goal_xyz, dtype=float).reshape(3)
-            cfg["initial_vias"] = np.vstack([(1.0 - a) * start_arr + a * goal_arr for a in t])
+            cfg["initial_vias"] = np.vstack(
+                [(1.0 - a) * start_arr + a * goal_arr for a in t]
+            )
 
         scenario_scene = self._planner_scene
         world_model_note = ""
@@ -138,12 +140,18 @@ class RuntimeHelpersMixin:
 
         nav_path = NavPath()
         nav_path.header = goal_pose.header
-        nav_path.header.frame_id = goal_pose.header.frame_id or start_pose.header.frame_id or "world"
+        nav_path.header.frame_id = (
+            goal_pose.header.frame_id or start_pose.header.frame_id or "world"
+        )
 
         if geo_result.path is not None:
             sample_count = max(2, self._n_points)
-            xyz = np.asarray(geo_result.path.sample(sample_count), dtype=float).reshape(-1, 3)
-            yaw = np.asarray(geo_result.path.sample_yaw(sample_count), dtype=float).reshape(-1)
+            xyz = np.asarray(geo_result.path.sample(sample_count), dtype=float).reshape(
+                -1, 3
+            )
+            yaw = np.asarray(
+                geo_result.path.sample_yaw(sample_count), dtype=float
+            ).reshape(-1)
             if yaw.shape[0] != xyz.shape[0]:
                 yaw = np.linspace(
                     self._quaternion_to_yaw(start_pose.pose.orientation),
@@ -283,7 +291,11 @@ class RuntimeHelpersMixin:
 
         stored = self._geometric_plans.get(request.geometric_plan_id)
         if stored is None:
-            return None, request.geometric_plan_id, f"Unknown geometric_plan_id '{request.geometric_plan_id}'."
+            return (
+                None,
+                request.geometric_plan_id,
+                f"Unknown geometric_plan_id '{request.geometric_plan_id}'.",
+            )
         if not stored.success:
             return (
                 None,
@@ -297,14 +309,31 @@ class RuntimeHelpersMixin:
         if method_norm in ("", "DEFAULT"):
             method_norm = self._default_trajectory_method.strip().upper()
 
-        profile = "ACADOS_PATH_FOLLOWING"
-        if "FAST" in method_norm:
-            profile = "ACADOS_PATH_FOLLOWING_FAST"
-        elif "STABLE" in method_norm or "COMMISSION" in method_norm:
-            profile = "ACADOS_PATH_FOLLOWING_STABLE"
+        timber_aliases = {
+            "TIMBER_MPC_ILQR": "ACADOS_PATH_FOLLOWING",
+            "TIMBER_MPC_ILQR_FAST": "ACADOS_PATH_FOLLOWING_FAST",
+            "TIMBER_MPC_ILQR_STABLE": "ACADOS_PATH_FOLLOWING_STABLE",
+            "MPC_ILQR": "ACADOS_PATH_FOLLOWING",
+            "MPC_ILQR_FAST": "ACADOS_PATH_FOLLOWING_FAST",
+            "MPC_ILQR_STABLE": "ACADOS_PATH_FOLLOWING_STABLE",
+            "A2B_ILQR": "ACADOS_PATH_FOLLOWING",
+            "A2B_ILQR_FAST": "ACADOS_PATH_FOLLOWING_FAST",
+            "A2B_ILQR_STABLE": "ACADOS_PATH_FOLLOWING_STABLE",
+        }
+        profile = timber_aliases.get(method_norm, method_norm)
+        if profile not in (
+            "ACADOS_PATH_FOLLOWING",
+            "ACADOS_PATH_FOLLOWING_FAST",
+            "ACADOS_PATH_FOLLOWING_STABLE",
+        ):
+            profile = "ACADOS_PATH_FOLLOWING"
+            if "FAST" in method_norm:
+                profile = "ACADOS_PATH_FOLLOWING_FAST"
+            elif "STABLE" in method_norm or "COMMISSION" in method_norm:
+                profile = "ACADOS_PATH_FOLLOWING_STABLE"
 
         if profile in self._trajectory_optimizers:
-            return self._trajectory_optimizers[profile], profile
+            return self._trajectory_optimizers[profile], method_norm
 
         if self._analytic_cfg is None:
             raise RuntimeError("Analytic crane configuration not initialized.")
@@ -330,9 +359,11 @@ class RuntimeHelpersMixin:
 
         optimizer = CartesianPathFollowingOptimizer(cfg)
         self._trajectory_optimizers[profile] = optimizer
-        return optimizer, profile
+        return optimizer, method_norm
 
-    def _trajectory_result_to_joint_trajectory(self, traj_result: Any) -> JointTrajectory:
+    def _trajectory_result_to_joint_trajectory(
+        self, traj_result: Any
+    ) -> JointTrajectory:
         traj = JointTrajectory()
 
         diagnostics = dict(getattr(traj_result, "diagnostics", {}) or {})
@@ -347,12 +378,16 @@ class RuntimeHelpersMixin:
         time_s = np.asarray(getattr(traj_result, "time_s", []), dtype=float).reshape(-1)
 
         if q_traj.ndim != 2:
-            raise ValueError("Trajectory optimizer returned invalid q_trajectory shape.")
+            raise ValueError(
+                "Trajectory optimizer returned invalid q_trajectory shape."
+            )
         if dq_traj.shape != q_traj.shape:
             dq_traj = np.zeros_like(q_traj)
 
         if time_s.size != q_traj.shape[0]:
-            time_s = np.linspace(0.0, max(0.1, 0.1 * (q_traj.shape[0] - 1)), q_traj.shape[0])
+            time_s = np.linspace(
+                0.0, max(0.1, 0.1 * (q_traj.shape[0] - 1)), q_traj.shape[0]
+            )
 
         names = list(diagnostics.get("reduced_joint_names", self._reduced_joint_names))
         if not names:
@@ -368,7 +403,9 @@ class RuntimeHelpersMixin:
 
         return traj
 
-    def _solve_reduced_q_from_pose(self, pose: PoseStamped) -> Tuple[bool, np.ndarray, str]:
+    def _solve_reduced_q_from_pose(
+        self, pose: PoseStamped
+    ) -> Tuple[bool, np.ndarray, str]:
         if self._steady_state_solver is None or self._analytic_cfg is None:
             return False, np.zeros(0, dtype=float), "steady-state solver is unavailable"
 
@@ -446,19 +483,27 @@ class RuntimeHelpersMixin:
                 yaw = np.repeat(yaw, n, axis=0)
             else:
                 pts = np.vstack([self._interp_vec(pts, s) for s in idx])
-                yaw = np.asarray([self._interp_scalar(yaw, s) for s in idx], dtype=float)
+                yaw = np.asarray(
+                    [self._interp_scalar(yaw, s) for s in idx], dtype=float
+                )
             return pts, yaw
 
-        n_keep = min(max(self._traj_ctrl_pts_min, pts.shape[0]), self._traj_ctrl_pts_max)
+        n_keep = min(
+            max(self._traj_ctrl_pts_min, pts.shape[0]), self._traj_ctrl_pts_max
+        )
         sample_idx = np.linspace(0, pts.shape[0] - 1, n_keep)
         ctrl_pts = np.vstack([self._interp_vec(pts, s) for s in sample_idx])
-        ctrl_yaw = np.asarray([self._interp_scalar(yaw, s) for s in sample_idx], dtype=float)
+        ctrl_yaw = np.asarray(
+            [self._interp_scalar(yaw, s) for s in sample_idx], dtype=float
+        )
         return ctrl_pts, ctrl_yaw
 
     def _initialize_planning_runtime(self) -> None:
         try:
             import pinocchio as pin
-            from motion_planning.io.optimized_params import load_optimized_planner_params
+            from motion_planning.io.optimized_params import (
+                load_optimized_planner_params,
+            )
             from motion_planning.kinematics import CraneKinematics
             from motion_planning.mechanics.analytic import (
                 CraneSteadyState,
@@ -472,7 +517,9 @@ class RuntimeHelpersMixin:
 
         try:
             self._analytic_cfg = create_crane_config()
-            urdf_resolved = self._resolve_existing_urdf_path(self._analytic_cfg.urdf_path)
+            urdf_resolved = self._resolve_runtime_urdf_path(
+                self._analytic_cfg.urdf_path
+            )
             self._analytic_cfg.urdf_path = str(urdf_resolved)
             desc = ModelDescription(self._analytic_cfg)
             self._steady_state_solver = CraneSteadyState(desc, self._analytic_cfg)
@@ -484,19 +531,24 @@ class RuntimeHelpersMixin:
                 base_frame="world",
                 end_frame=self._analytic_cfg.base_frame,
             )
-            self._T_world_base = np.asarray(fk_base["base_to_end"]["homogeneous"], dtype=float)
+            self._T_world_base = np.asarray(
+                fk_base["base_to_end"]["homogeneous"], dtype=float
+            )
             self._T_base_world = np.linalg.inv(self._T_world_base)
 
             full_model = pin.buildModelFromUrdf(str(self._analytic_cfg.urdf_path))
             full_name_to_jid = {
-                str(full_model.names[jid]): int(jid) for jid in range(1, full_model.njoints)
+                str(full_model.names[jid]): int(jid)
+                for jid in range(1, full_model.njoints)
             }
             lock_ids = [
                 full_name_to_jid[jn]
                 for jn in self._analytic_cfg.locked_joints
                 if jn in full_name_to_jid
             ]
-            reduced_model = pin.buildReducedModel(full_model, lock_ids, pin.neutral(full_model))
+            reduced_model = pin.buildReducedModel(
+                full_model, lock_ids, pin.neutral(full_model)
+            )
             self._reduced_joint_names = [
                 str(reduced_model.names[jid]) for jid in range(1, reduced_model.njoints)
             ]
@@ -509,7 +561,9 @@ class RuntimeHelpersMixin:
                 if not params_path.is_absolute():
                     params_path = Path.cwd() / params_path
                 if params_path.exists():
-                    self._optimized_planner_params = load_optimized_planner_params(params_path)
+                    self._optimized_planner_params = load_optimized_planner_params(
+                        params_path
+                    )
                 else:
                     self.get_logger().warn(
                         f"geometric_optimized_params_file '{params_path}' does not exist; using defaults."
@@ -544,14 +598,21 @@ class RuntimeHelpersMixin:
         try:
             from ament_index_python.packages import get_package_share_directory
 
-            candidates.append(Path(get_package_share_directory("concrete_block_motion_planning")))
+            candidates.append(
+                Path(get_package_share_directory("concrete_block_motion_planning"))
+            )
         except Exception:
             pass
 
         this_file = Path(__file__).resolve()
         for parent in [this_file.parent] + list(this_file.parents):
             candidates.append(parent)
-            candidates.append(parent / "src" / "concrete_block_stack" / "concrete_block_motion_planning")
+            candidates.append(
+                parent
+                / "src"
+                / "concrete_block_stack"
+                / "concrete_block_motion_planning"
+            )
 
         for cand in candidates:
             if not cand.exists():
@@ -564,7 +625,9 @@ class RuntimeHelpersMixin:
         try:
             import motion_planning  # noqa: F401
         except Exception as exc:
-            self.get_logger().warn(f"Failed to expose motion_planning module path: {exc}")
+            self.get_logger().warn(
+                f"Failed to expose motion_planning module path: {exc}"
+            )
 
     @staticmethod
     def _resolve_existing_urdf_path(initial_path: str) -> Path:
@@ -587,6 +650,19 @@ class RuntimeHelpersMixin:
             f"Cannot locate crane URDF. Tried configured path '{initial_path}' "
             "and local crane_urdf/crane.urdf candidates."
         )
+
+    def _resolve_runtime_urdf_path(self, initial_path: str) -> Path:
+        robot_description_xml = str(
+            getattr(self, "_robot_description_xml", "") or ""
+        ).strip()
+        if robot_description_xml:
+            urdf_path = (
+                Path(tempfile.gettempdir())
+                / "concrete_block_motion_planning_robot_description.urdf"
+            )
+            urdf_path.write_text(robot_description_xml, encoding="utf-8")
+            return urdf_path
+        return self._resolve_existing_urdf_path(initial_path)
 
     def _load_named_configurations_from_file(self, path_value: str) -> None:
         if not path_value:
@@ -618,7 +694,9 @@ class RuntimeHelpersMixin:
             )
             return
 
-        default_joint_names = payload.get("joint_names", self._default_named_joint_names)
+        default_joint_names = payload.get(
+            "joint_names", self._default_named_joint_names
+        )
         if not isinstance(default_joint_names, list):
             default_joint_names = self._default_named_joint_names
         default_joint_names = [str(v) for v in default_joint_names]
@@ -651,7 +729,9 @@ class RuntimeHelpersMixin:
 
             positions_raw = cfg.get("positions")
             if not isinstance(positions_raw, list) or not positions_raw:
-                self.get_logger().warn(f"Skipping '{name}': missing or empty positions list.")
+                self.get_logger().warn(
+                    f"Skipping '{name}': missing or empty positions list."
+                )
                 continue
             try:
                 positions = [float(v) for v in positions_raw]
@@ -659,7 +739,9 @@ class RuntimeHelpersMixin:
                 self.get_logger().warn(f"Skipping '{name}': positions must be numeric.")
                 continue
             if not all(math.isfinite(v) for v in positions):
-                self.get_logger().warn(f"Skipping '{name}': positions must be finite numeric values.")
+                self.get_logger().warn(
+                    f"Skipping '{name}': positions must be finite numeric values."
+                )
                 continue
 
             joint_names_raw = cfg.get("joint_names", default_joint_names)
@@ -668,10 +750,14 @@ class RuntimeHelpersMixin:
                 continue
             joint_names = [str(v).strip() for v in joint_names_raw]
             if any(not jn for jn in joint_names):
-                self.get_logger().warn(f"Skipping '{name}': joint_names must not contain empty entries.")
+                self.get_logger().warn(
+                    f"Skipping '{name}': joint_names must not contain empty entries."
+                )
                 continue
             if len(set(joint_names)) != len(joint_names):
-                self.get_logger().warn(f"Skipping '{name}': joint_names must be unique.")
+                self.get_logger().warn(
+                    f"Skipping '{name}': joint_names must be unique."
+                )
                 continue
 
             if len(joint_names) != len(positions):
@@ -682,12 +768,18 @@ class RuntimeHelpersMixin:
                 continue
 
             try:
-                duration_s = float(cfg.get("duration_s", self._named_cfg_default_duration_s))
+                duration_s = float(
+                    cfg.get("duration_s", self._named_cfg_default_duration_s)
+                )
             except Exception:
-                self.get_logger().warn(f"Skipping '{name}': duration_s must be numeric.")
+                self.get_logger().warn(
+                    f"Skipping '{name}': duration_s must be numeric."
+                )
                 continue
             if not math.isfinite(duration_s) or duration_s <= 0.0:
-                self.get_logger().warn(f"Skipping '{name}': duration_s must be > 0 and finite.")
+                self.get_logger().warn(
+                    f"Skipping '{name}': duration_s must be > 0 and finite."
+                )
                 continue
 
             traj = JointTrajectory()
@@ -723,7 +815,9 @@ class RuntimeHelpersMixin:
             with config_path.open("r", encoding="utf-8") as fh:
                 payload = yaml.safe_load(fh) or {}
         except Exception as exc:  # pragma: no cover - defensive runtime handling
-            self.get_logger().error(f"Failed to parse wall plan file '{config_path}': {exc}")
+            self.get_logger().error(
+                f"Failed to parse wall plan file '{config_path}': {exc}"
+            )
             return
 
         if not isinstance(payload, dict):
@@ -746,11 +840,15 @@ class RuntimeHelpersMixin:
                 self.get_logger().warn("Skipping unnamed wall plan.")
                 continue
             if not isinstance(plan_cfg, dict):
-                self.get_logger().warn(f"Skipping wall plan '{plan_name}': expected mapping value.")
+                self.get_logger().warn(
+                    f"Skipping wall plan '{plan_name}': expected mapping value."
+                )
                 continue
             sequence = plan_cfg.get("sequence", [])
             if not isinstance(sequence, list) or not sequence:
-                self.get_logger().warn(f"Skipping wall plan '{plan_name}': missing or empty sequence.")
+                self.get_logger().warn(
+                    f"Skipping wall plan '{plan_name}': missing or empty sequence."
+                )
                 continue
 
             resolved_positions: Dict[str, Tuple[float, float, float]] = {}
@@ -782,11 +880,12 @@ class RuntimeHelpersMixin:
                     reference_block_id = ""
                 else:
                     reference_block_id = str(item.get("relative_to", "")).strip()
-                    if not reference_block_id or reference_block_id not in resolved_positions:
+                    if (
+                        not reference_block_id
+                        or reference_block_id not in resolved_positions
+                    ):
                         valid = False
-                        invalid_reason = (
-                            f"item {idx + 1} references unknown block '{reference_block_id}'"
-                        )
+                        invalid_reason = f"item {idx + 1} references unknown block '{reference_block_id}'"
                         break
                     offset = self._vec3_or_none(item.get("offset", [0.0, 0.0, 0.0]))
                     if offset is None:
@@ -838,9 +937,7 @@ class RuntimeHelpersMixin:
             self._wall_plan_progress[name] = 0
             loaded += 1
 
-        self.get_logger().info(
-            f"Loaded {loaded} wall plans from '{config_path}'."
-        )
+        self.get_logger().info(f"Loaded {loaded} wall plans from '{config_path}'.")
 
     @staticmethod
     def _interp_vec(values: np.ndarray, index: float) -> np.ndarray:
@@ -974,7 +1071,7 @@ class RuntimeHelpersMixin:
             return (
                 True,
                 "trajectory runtime modules are available "
-                "(ACADOS_SOURCE_DIR is not set; source acados_interface_setup.sh if codegen fails)",
+                "(ACADOS_SOURCE_DIR is not set; ensure the devcontainer environment is loaded if codegen fails)",
             )
         acados_path = Path(acados_source).expanduser()
         if not acados_path.exists():
@@ -982,7 +1079,10 @@ class RuntimeHelpersMixin:
                 True,
                 f"trajectory modules ok, but ACADOS_SOURCE_DIR '{acados_path}' does not exist",
             )
-        return True, f"trajectory runtime modules are available (ACADOS_SOURCE_DIR={acados_path})"
+        return (
+            True,
+            f"trajectory runtime modules are available (ACADOS_SOURCE_DIR={acados_path})",
+        )
 
     def _publish_backend_status(self, state: str, detail: str) -> None:
         msg = String()

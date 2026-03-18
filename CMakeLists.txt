@@ -51,10 +51,5 @@ install(FILES
   DESTINATION share/${PROJECT_NAME}
 )
 
-install(PROGRAMS
-  acados_interface_setup.sh
-  DESTINATION share/${PROJECT_NAME}
-)
-
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()

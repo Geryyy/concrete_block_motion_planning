@@ -133,6 +133,8 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
         self._traj_ctrl_pts_min = self._cfg.traj_ctrl_pts_min
         self._traj_ctrl_pts_max = self._cfg.traj_ctrl_pts_max
         self._traj_acados_verbose = self._cfg.traj_acados_verbose
+        self._traj_fixed_duration_s = max(0.1, float(self._cfg.traj_fixed_duration_s))
+        self._traj_fixed_num_points = max(2, int(self._cfg.traj_fixed_num_points))
         self._execution_enabled = self._cfg.execution_enabled
         self._execution_backend = self._cfg.execution_backend.strip().lower()
         self._execution_trajectory_topic = self._cfg.execution_trajectory_topic.strip()

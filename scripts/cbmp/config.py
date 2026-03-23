@@ -19,6 +19,8 @@ class NodeConfig:
     traj_ctrl_pts_min: int
     traj_ctrl_pts_max: int
     traj_acados_verbose: bool
+    traj_fixed_duration_s: float
+    traj_fixed_num_points: int
     execution_enabled: bool
     execution_backend: str
     execution_trajectory_topic: str
@@ -57,6 +59,8 @@ def declare_and_load_config(node: Node) -> NodeConfig:
     node.declare_parameter("trajectory.ctrl_points_min", 4)
     node.declare_parameter("trajectory.ctrl_points_max", 10)
     node.declare_parameter("trajectory.acados_verbose", False)
+    node.declare_parameter("trajectory.fixed_duration_s", 10.0)
+    node.declare_parameter("trajectory.fixed_num_points", 121)
     node.declare_parameter("execution.enabled", False)
     node.declare_parameter("execution.backend", "topic")
     node.declare_parameter(
@@ -123,6 +127,12 @@ def declare_and_load_config(node: Node) -> NodeConfig:
         traj_ctrl_pts_min=int(node.get_parameter("trajectory.ctrl_points_min").value),
         traj_ctrl_pts_max=int(node.get_parameter("trajectory.ctrl_points_max").value),
         traj_acados_verbose=bool(node.get_parameter("trajectory.acados_verbose").value),
+        traj_fixed_duration_s=float(
+            node.get_parameter("trajectory.fixed_duration_s").value
+        ),
+        traj_fixed_num_points=max(
+            2, int(node.get_parameter("trajectory.fixed_num_points").value)
+        ),
         execution_enabled=bool(node.get_parameter("execution.enabled").value),
         execution_backend=str(node.get_parameter("execution.backend").value),
         execution_trajectory_topic=str(

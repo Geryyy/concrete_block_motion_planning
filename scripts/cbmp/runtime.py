@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -15,7 +16,8 @@ from nav_msgs.msg import Path as NavPath
 from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from .types import StoredGeometricPlan, WallPlanTask
+from .ids import make_trajectory_id
+from .types import StoredGeometricPlan, StoredTrajectory, WallPlanTask
 
 
 class RuntimeHelpersMixin:
@@ -363,6 +365,74 @@ class RuntimeHelpersMixin:
         optimizer = CartesianPathFollowingOptimizer(cfg)
         self._trajectory_optimizers[profile] = optimizer
         return optimizer, method_norm
+
+    def _build_fixed_time_interpolation_trajectory(
+        self,
+        q_start: np.ndarray,
+        q_goal: np.ndarray,
+        duration_s: float,
+        num_points: int,
+        method: str,
+        geometric_plan_id: str,
+        path: NavPath,
+    ) -> StoredTrajectory:
+        duration_s = max(0.1, float(duration_s))
+        num_points = max(2, int(num_points))
+
+        alpha = np.linspace(0.0, 1.0, num_points, dtype=float).reshape(-1, 1)
+        q_traj = (1.0 - alpha) * q_start.reshape(1, -1) + alpha * q_goal.reshape(1, -1)
+        dq_const = (q_goal - q_start) / duration_s
+        dq_traj = np.repeat(dq_const.reshape(1, -1), num_points, axis=0)
+        dq_traj[0, :] = 0.0
+        dq_traj[-1, :] = 0.0
+
+        time_s = np.linspace(0.0, duration_s, num_points, dtype=float)
+        q_delta = q_goal - q_start
+        path_len = 0.0
+        try:
+            if path.poses:
+                pts = np.asarray(
+                    [
+                        [p.pose.position.x, p.pose.position.y, p.pose.position.z]
+                        for p in path.poses
+                    ],
+                    dtype=float,
+                )
+                if pts.shape[0] > 1:
+                    path_len = float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum())
+        except Exception:
+            path_len = 0.0
+
+        traj_result = SimpleNamespace(
+            success=True,
+            message=(
+                "Generated fixed-time interpolated joint trajectory "
+                f"({num_points} points, {duration_s:.2f}s) without acados."
+            ),
+            state=q_traj,
+            time_s=time_s,
+            diagnostics={
+                "q_trajectory": q_traj,
+                "dq_trajectory": dq_traj,
+                "reduced_joint_names": list(self._reduced_joint_names),
+                "fallback_mode": "FIXED_TIME_INTERPOLATION",
+                "duration_s": duration_s,
+                "num_points": num_points,
+                "joint_delta_norm": float(np.linalg.norm(q_delta)),
+                "path_length_m": path_len,
+            },
+        )
+
+        trajectory = self._trajectory_result_to_joint_trajectory(traj_result)
+        trajectory_id = make_trajectory_id()
+        return StoredTrajectory(
+            trajectory_id=trajectory_id,
+            trajectory=trajectory,
+            success=True,
+            message=traj_result.message,
+            method=method,
+            geometric_plan_id=geometric_plan_id,
+        )
 
     def _trajectory_result_to_joint_trajectory(
         self, traj_result: Any

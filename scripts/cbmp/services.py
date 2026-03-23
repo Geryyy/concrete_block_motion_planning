@@ -306,6 +306,7 @@ class ServiceHandlersMixin:
         response: ComputeTrajectory.Response,
     ) -> ComputeTrajectory.Response:
         method = request.method.strip() or self._default_trajectory_method
+        method_upper = method.strip().upper()
 
         if not self._trajectory_runtime_available:
             response.success = False
@@ -351,6 +352,29 @@ class ServiceHandlersMixin:
             response.message = f"Failed to solve goal IK/steady-state: {goal_msg}"
             return response
 
+        if method_upper in (
+            "FIXED_TIME_INTERPOLATION",
+            "FIXED_JOINT_INTERPOLATION",
+            "JOINT_INTERPOLATION",
+            "LINEAR_JOINT_INTERPOLATION",
+        ):
+            stored = self._build_fixed_time_interpolation_trajectory(
+                q_start=q_start,
+                q_goal=q_goal,
+                duration_s=self._traj_fixed_duration_s,
+                num_points=self._traj_fixed_num_points,
+                method=method_upper,
+                geometric_plan_id=geometric_plan_id,
+                path=path,
+            )
+            self._trajectories[stored.trajectory_id] = stored
+            response.success = True
+            response.trajectory_id = stored.trajectory_id
+            response.trajectory = stored.trajectory
+            response.message = stored.message
+            self._publish_backend_status("AVAILABLE", stored.message)
+            return response
+
         ctrl_pts_xyz, ctrl_pts_yaw = self._extract_control_points(path)
 
         try:
@@ -374,7 +398,6 @@ class ServiceHandlersMixin:
                 "T_max": 10.0,
             }
 
-            method_upper = method.upper()
             if "FAST" in method_upper:
                 req_cfg.update(
                     {

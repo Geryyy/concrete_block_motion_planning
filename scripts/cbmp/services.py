@@ -365,6 +365,13 @@ class ServiceHandlersMixin:
                 "ctrl_pts_yaw": ctrl_pts_yaw,
                 "spline_ctrl_points": int(ctrl_pts_xyz.shape[0]),
                 "acados_verbose": bool(self._traj_acados_verbose),
+                # Work around the current free-time OCP sensitivity by solving
+                # a fixed-duration path-following problem for runtime use.
+                "optimize_time": False,
+                "fixed_time_duration_s": 10.0,
+                "fixed_time_duration_candidates": (10.0,),
+                "T_min": 10.0,
+                "T_max": 10.0,
             }
 
             method_upper = method.upper()

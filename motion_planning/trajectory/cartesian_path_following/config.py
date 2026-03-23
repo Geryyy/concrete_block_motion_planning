@@ -67,7 +67,7 @@ class CartesianPathFollowingConfig:
     passive_dq_soft_abs_eps: float = 1e-6
     terminal_hard_zero_velocity: bool = True
     terminal_hard_end_progress: bool = True
-    tool_frame_name: str = "K8_tool_center_point_tcp"
+    tool_frame_name: str = "K8_tool_center_point"
     payload_mass: float = 0.0
     payload_com_tcp: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     hessian_approx: str = "GAUSS_NEWTON"
@@ -77,6 +77,14 @@ class CartesianPathFollowingConfig:
     qp_tol: float = 1e-7
     nlp_tol: float = 1e-6
     terminal_hold_steps: int = 0
+    optimize_time: bool = True
+    fixed_time_duration_s: Optional[float] = None
+    fixed_time_duration_candidates: Tuple[float, ...] = ()
+    fixed_time_nominal_tcp_speed: float = 0.18
+    fixed_time_min_duration_s: float = 6.0
+    fixed_time_max_duration_s: float = 45.0
+    fixed_time_sway_slack_s: float = 4.0
+    warm_start_progress: bool = True
     code_export_dir: Path = Path("/tmp/crane_cartesian_path_following_codegen")
     solver_json_name: str = "crane_cartesian_path_following_ocp.json"
     precompile_on_init: bool = False

@@ -255,6 +255,15 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
             f"Received robot_description from '{self._robot_description_topic}'."
         )
         self._initialize_planning_runtime()
+        if self._planning_runtime_ready:
+            self.get_logger().info(
+                "Planning runtime reinitialized successfully from robot_description."
+            )
+        else:
+            self.get_logger().warn(
+                "Planning runtime still unavailable after robot_description update: "
+                f"{self._planning_runtime_reason}"
+            )
 
     def _register_services(self) -> None:
         # New stage-split services

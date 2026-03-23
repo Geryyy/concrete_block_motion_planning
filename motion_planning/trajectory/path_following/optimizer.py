@@ -568,22 +568,10 @@ class CranePathFollowingAcadosOptimizer(TrajectoryOptimizer):
                 diagnostics={"compiled_only": True},
             )
 
-        runtime_options = (
-            ("nlp_solver_max_iter", nlp_max_iter),
-            ("tol_stat", nlp_tol),
-            ("tol_eq", nlp_tol),
-            ("tol_ineq", nlp_tol),
-            ("tol_comp", nlp_tol),
-            ("qp_tol_stat", qp_tol),
-            ("qp_tol_eq", qp_tol),
-            ("qp_tol_ineq", qp_tol),
-            ("qp_tol_comp", qp_tol),
-        )
-        for opt_name, opt_val in runtime_options:
-            try:
-                solver.options_set(opt_name, opt_val)
-            except Exception:
-                pass
+        # Runtime option mutation is brittle across acados releases. Keep the
+        # solver options defined on the OCP object above and avoid calling
+        # options_set() here, since some builds abort in the C layer for fields
+        # that the Python wrapper still advertises.
         for k in range(N):
             solver.set(k, "lbu", lbu)
             solver.set(k, "ubu", ubu)

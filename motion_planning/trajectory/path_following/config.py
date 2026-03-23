@@ -63,7 +63,7 @@ class CranePathFollowingAcadosConfig:
     terminal_passive_dq_slack_weight: float = 400.0
     passive_dq_soft_abs_eps: float = 1e-6
     terminal_hold_steps: int = 0
-    tool_frame_name: str = "K8_tool_center_point_tcp"
+    tool_frame_name: str = "K8_tool_center_point"
     payload_mass: float = 0.0
     payload_com_tcp: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     code_export_dir: Path = Path("/tmp/crane_acados_path_following_codegen")

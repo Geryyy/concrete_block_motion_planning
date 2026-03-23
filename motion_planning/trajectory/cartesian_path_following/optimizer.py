@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+import inspect
 
 import numpy as np
 
@@ -35,6 +36,78 @@ def _as_float_array(values: Sequence[float], size: int, name: str) -> np.ndarray
     if arr.shape[0] != size:
         raise ValueError(f"{name} must have length {size}, got {arr.shape[0]}.")
     return arr
+
+
+def _polyline_length(points: np.ndarray) -> float:
+    pts = np.asarray(points, dtype=float).reshape(-1, 3)
+    if pts.shape[0] < 2:
+        return 0.0
+    return float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum())
+
+
+def _derive_fixed_time_candidates(
+    *,
+    ctrl_pts_xyz: np.ndarray,
+    T_min: float,
+    T_max: float,
+    requested_duration: Optional[float],
+    requested_candidates: Sequence[float],
+    nominal_tcp_speed: float,
+    min_duration_s: float,
+    max_duration_s: float,
+    sway_slack_s: float,
+) -> tuple[np.ndarray, float]:
+    if requested_candidates:
+        values = np.asarray(requested_candidates, dtype=float).reshape(-1)
+    elif requested_duration is not None:
+        values = np.asarray([float(requested_duration)], dtype=float)
+    else:
+        path_length = _polyline_length(ctrl_pts_xyz)
+        base = path_length / max(float(nominal_tcp_speed), 1e-3) + float(sway_slack_s)
+        nominal = float(np.clip(base, float(min_duration_s), float(max_duration_s)))
+        values = np.asarray([0.85 * nominal, nominal, 1.2 * nominal], dtype=float)
+
+    clipped = np.clip(values, float(T_min), float(T_max))
+    rounded_unique = []
+    for value in clipped.tolist():
+        value = round(float(value), 6)
+        if value not in rounded_unique:
+            rounded_unique.append(value)
+    if not rounded_unique:
+        midpoint = round(float(0.5 * (T_min + T_max)), 6)
+        rounded_unique.append(midpoint)
+    arr = np.asarray(rounded_unique, dtype=float)
+    return arr, float(arr[min(1, arr.shape[0] - 1)])
+
+
+def _progress_warm_start(
+    *,
+    N: int,
+    s0: float,
+    sdot0: float,
+    T_guess: float,
+    warm_start_progress: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    if N <= 0:
+        return np.asarray([s0], dtype=float), np.asarray([sdot0], dtype=float)
+
+    tau = np.linspace(0.0, 1.0, N + 1, dtype=float)
+    if not warm_start_progress:
+        s = np.linspace(float(s0), 1.0, N + 1, dtype=float)
+        sdot = np.gradient(s, tau, edge_order=1) / max(float(T_guess), 1e-6)
+        sdot[0] = float(sdot0)
+        return s, sdot
+
+    start = float(np.clip(s0, 0.0, 1.0))
+    remaining = max(1e-6, 1.0 - start)
+    smooth = 3.0 * tau**2 - 2.0 * tau**3
+    ds_dtau = 6.0 * tau * (1.0 - tau)
+    s = start + remaining * smooth
+    sdot = remaining * ds_dtau / max(float(T_guess), 1e-6)
+    sdot[0] = float(sdot0)
+    s[-1] = 1.0
+    sdot[-1] = 0.0
+    return s, sdot
 
 
 def _fk_num(pin, model, data, q_dec: np.ndarray, tool_fid: int) -> np.ndarray:
@@ -313,11 +386,53 @@ class CartesianPathFollowingOptimizer(TrajectoryOptimizer):
         passive_v_idx = [reduced_name_to_vidx[name] for name in sorted(passive_set & keep_set)]
         n_act = len(act_v_idx)
 
+        optimize_time = bool(req.config.get("optimize_time", cfg.optimize_time))
         T_min = float(req.config.get("T_min", _FREE_TIME_T_MIN_DEFAULT))
         T_max = float(req.config.get("T_max", _FREE_TIME_T_MAX_DEFAULT))
         if not (T_min > 0.0 and T_min <= T_max):
             raise ValueError(f"Invalid free-time bounds: require 0 < T_min <= T_max, got {T_min}, {T_max}.")
-        T_guess = 0.5 * (T_min + T_max)
+        fixed_time_candidates = ()
+        if not optimize_time:
+            fixed_time_candidates, T_guess = _derive_fixed_time_candidates(
+                ctrl_pts_xyz=np.asarray(ctrl_pts_xyz, dtype=float),
+                T_min=T_min,
+                T_max=T_max,
+                requested_duration=(
+                    None
+                    if req.config.get("fixed_time_duration_s", cfg.fixed_time_duration_s) is None
+                    else float(req.config.get("fixed_time_duration_s", cfg.fixed_time_duration_s))
+                ),
+                requested_candidates=req.config.get(
+                    "fixed_time_duration_candidates",
+                    cfg.fixed_time_duration_candidates,
+                ),
+                nominal_tcp_speed=float(
+                    req.config.get(
+                        "fixed_time_nominal_tcp_speed",
+                        cfg.fixed_time_nominal_tcp_speed,
+                    )
+                ),
+                min_duration_s=float(
+                    req.config.get(
+                        "fixed_time_min_duration_s",
+                        cfg.fixed_time_min_duration_s,
+                    )
+                ),
+                max_duration_s=float(
+                    req.config.get(
+                        "fixed_time_max_duration_s",
+                        cfg.fixed_time_max_duration_s,
+                    )
+                ),
+                sway_slack_s=float(
+                    req.config.get(
+                        "fixed_time_sway_slack_s",
+                        cfg.fixed_time_sway_slack_s,
+                    )
+                ),
+            )
+        else:
+            T_guess = 0.5 * (T_min + T_max)
         payload_mass_default = float(req.config.get("payload_mass", cfg.payload_mass))
         payload_com_default = np.asarray(req.config.get("payload_com_tcp", cfg.payload_com_tcp), dtype=float).reshape(-1)
         if payload_com_default.shape[0] != 3:
@@ -471,6 +586,8 @@ class CartesianPathFollowingOptimizer(TrajectoryOptimizer):
                 y_parts += [t_scale * dq_soft_slack]
                 w_diag += [passive_dq_slack_w] * n_pas
         time_weight = float(req.config.get("time_weight", _FREE_TIME_WEIGHT_DEFAULT))
+        if not optimize_time:
+            time_weight = 0.0
         y_parts += [T]
         w_diag += [time_weight]
         y_expr = ca.vertcat(*y_parts)
@@ -604,9 +721,11 @@ class CartesianPathFollowingOptimizer(TrajectoryOptimizer):
             lbx.extend(q_lb_dec[finite_idx].astype(float).tolist())
             ubx.extend(q_ub_dec[finite_idx].astype(float).tolist())
 
+        T_stage_lb = T_min if optimize_time else T_guess
+        T_stage_ub = T_max if optimize_time else T_guess
         idxbx.extend([idx_s, idx_sdot, idx_T])
-        lbx.extend([s_min, sdot_min, T_min])
-        ubx.extend([s_max, sdot_max, T_max])
+        lbx.extend([s_min, sdot_min, T_stage_lb])
+        ubx.extend([s_max, sdot_max, T_stage_ub])
         ocp.constraints.idxbx = np.asarray(idxbx, dtype=int)
         ocp.constraints.lbx = np.asarray(lbx, dtype=float)
         ocp.constraints.ubx = np.asarray(ubx, dtype=float)
@@ -675,14 +794,17 @@ class CartesianPathFollowingOptimizer(TrajectoryOptimizer):
             solver_json = str(
                 code_export_dir / str(req.config.get("solver_json_name", cfg.solver_json_name))
             )
-            self._solver = AcadosOcpSolver(
-                ocp,
-                json_file=solver_json,
-                build=bool(req.config.get("acados_build", True)),
-                generate=bool(req.config.get("acados_generate", True)),
-                check_reuse_possible=bool(req.config.get("acados_check_reuse_possible", True)),
-                verbose=bool(req.config.get("acados_verbose", True)),
-            )
+            solver_kwargs = {
+                "json_file": solver_json,
+                "build": bool(req.config.get("acados_build", True)),
+                "generate": bool(req.config.get("acados_generate", True)),
+                "verbose": bool(req.config.get("acados_verbose", True)),
+            }
+            if "check_reuse_possible" in inspect.signature(AcadosOcpSolver.__init__).parameters:
+                solver_kwargs["check_reuse_possible"] = bool(
+                    req.config.get("acados_check_reuse_possible", True)
+                )
+            self._solver = AcadosOcpSolver(ocp, **solver_kwargs)
             self._solver_key = solver_key
         solver = self._solver
 
@@ -702,22 +824,10 @@ class CartesianPathFollowingOptimizer(TrajectoryOptimizer):
             solver.cost_set(k, "W", W_run)
         solver.cost_set(N, "W", W_term)
 
-        runtime_options = (
-            ("nlp_solver_max_iter", int(req.config.get("nlp_solver_max_iter", cfg.nlp_solver_max_iter))),
-            ("tol_stat", nlp_tol),
-            ("tol_eq", nlp_tol),
-            ("tol_ineq", nlp_tol),
-            ("tol_comp", nlp_tol),
-            ("qp_tol_stat", qp_tol),
-            ("qp_tol_eq", qp_tol),
-            ("qp_tol_ineq", qp_tol),
-            ("qp_tol_comp", qp_tol),
-        )
-        for opt_name, opt_val in runtime_options:
-            try:
-                solver.options_set(opt_name, opt_val)
-            except Exception:
-                pass
+        # Runtime option mutation is brittle across acados releases. Keep the
+        # solver options defined on the OCP object above and avoid calling
+        # options_set() here, since some builds abort in the C layer for fields
+        # that the Python wrapper still advertises.
 
         # Keep runtime bounds mutable (e.g., T_min/T_max tuning) without codegen.
         for k in range(N):
@@ -726,86 +836,156 @@ class CartesianPathFollowingOptimizer(TrajectoryOptimizer):
         idxbx_arr = np.asarray(idxbx, dtype=int)
         pos_s = np.where(idxbx_arr == idx_s)[0]
         pos_sdot = np.where(idxbx_arr == idx_sdot)[0]
-        for k in range(1, N):
-            solver.set(k, "lbx", np.asarray(lbx, dtype=float))
-            solver.set(k, "ubx", np.asarray(ubx, dtype=float))
         terminal_hold_steps = int(req.config.get("terminal_hold_steps", cfg.terminal_hold_steps))
-        if terminal_hold_steps > 0 and pos_s.size > 0 and pos_sdot.size > 0:
-            hold_start = max(1, N - terminal_hold_steps)
-            lbx_hold = np.asarray(lbx, dtype=float).copy()
-            ubx_hold = np.asarray(ubx, dtype=float).copy()
-            lbx_hold[int(pos_s[0])] = 1.0
-            ubx_hold[int(pos_s[0])] = 1.0
-            lbx_hold[int(pos_sdot[0])] = 0.0
-            ubx_hold[int(pos_sdot[0])] = 0.0
-            for k in range(hold_start, N):
-                solver.set(k, "lbx", lbx_hold)
-                solver.set(k, "ubx", ubx_hold)
-
-        # ── Initial guess: linear interpolation q0 → q_goal ──────────────────
-        x_ref = np.concatenate(
-            [q_goal, np.zeros(nv, dtype=float), np.asarray([1.0, sdot_ref, T_guess], dtype=float)]
-        )
-        x0_full = np.concatenate([q0, dq0, np.asarray([s0, sdot0, T_guess], dtype=float)])
-        x_traj = np.linspace(x0_full, x_ref, N + 1)
-        u_guess = np.zeros(n_act + 1, dtype=float)
-        if T_guess > 1e-9:
-            u_guess[-1] = np.clip((sdot_ref - sdot0) / T_guess, lbu[-1], ubu[-1])
-
-        for k in range(N + 1):
-            solver.set(k, "x", x_traj[k])
-        solver.constraints_set(0, "lbx", x0_partial)
-        solver.constraints_set(0, "ubx", x0_partial)
-        for k in range(N):
-            solver.set(k, "u", u_guess)
-            yref_k = np.zeros(ny, dtype=float)
-            tau_k = (float(k + 1) / float(N)) if N > 0 else 1.0
-            # Running residual layout:
-            # [xyz_err(3), yaw_err(1), s(1), (sdot-sdot_ref)(1), ...]
-            # so the progress reference must be written at index 4.
-            yref_k[4] = s0 + (1.0 - s0) * tau_k
-            solver.set(k, "yref", yref_k)
-        solver.set(N, "yref", np.zeros(ny_e, dtype=float))
         ctrl_flat = np.asarray(ctrl_pts_xyz, dtype=float).reshape(-1)
         yaw_flat = np.asarray(ctrl_pts_yaw, dtype=float).reshape(-1)
         payload_params = np.asarray([payload_mass_default, *payload_com_default.tolist()], dtype=float)
         if n_pas > 0:
-            # Linearly interpolate the passive-equilibrium reference from the
-            # start-config equilibrium to the goal-config equilibrium across the
-            # horizon.  A fixed start-eq reference for all stages causes the OCP
-            # to fight gravity as the crane moves, producing heavy oscillation.
             q_pas_start = q0[passive_v_idx]
             q_pas_goal = q_goal[passive_v_idx]
+            p_stage_values = []
             for k in range(N + 1):
                 alpha = float(k) / float(N) if N > 0 else 1.0
                 q_pas_k = (1.0 - alpha) * q_pas_start + alpha * q_pas_goal
-                solver.set(k, "p", np.concatenate([ctrl_flat, yaw_flat, q_pas_k, payload_params]))
+                p_stage_values.append(
+                    np.concatenate([ctrl_flat, yaw_flat, q_pas_k, payload_params])
+                )
         else:
-            for k in range(N + 1):
-                solver.set(k, "p", np.concatenate([ctrl_flat, yaw_flat, payload_params]))
+            shared = np.concatenate([ctrl_flat, yaw_flat, payload_params])
+            p_stage_values = [shared] * (N + 1)
 
-        # p_val used only for post-solve diagnostics (xyz_ref_fn and yaw_ref_fn evaluation).
         p_val = (
-            np.concatenate([ctrl_flat, yaw_flat, np.zeros(n_pas), payload_params]) if n_pas > 0 else np.concatenate([ctrl_flat, yaw_flat, payload_params])
+            np.concatenate([ctrl_flat, yaw_flat, np.zeros(n_pas), payload_params])
+            if n_pas > 0
+            else np.concatenate([ctrl_flat, yaw_flat, payload_params])
         )
 
-        status = int(solver.solve())
+        candidate_times = np.asarray(
+            [float(T_guess)] if not optimize_time else [float(T_guess)],
+            dtype=float,
+        )
+        warm_start_progress = bool(
+            req.config.get("warm_start_progress", cfg.warm_start_progress)
+        )
+        best_attempt: Optional[Dict[str, Any]] = None
+        selected_candidate = float(candidate_times[0])
+
+        for candidate_idx, candidate_T in enumerate(candidate_times.tolist()):
+            lbx_stage = np.asarray(lbx, dtype=float).copy()
+            ubx_stage = np.asarray(ubx, dtype=float).copy()
+            if not optimize_time:
+                t_pos = int(np.where(idxbx_arr == idx_T)[0][0])
+                lbx_stage[t_pos] = float(candidate_T)
+                ubx_stage[t_pos] = float(candidate_T)
+
+            for k in range(1, N):
+                solver.set(k, "lbx", lbx_stage)
+                solver.set(k, "ubx", ubx_stage)
+            if terminal_hold_steps > 0 and pos_s.size > 0 and pos_sdot.size > 0:
+                hold_start = max(1, N - terminal_hold_steps)
+                lbx_hold = lbx_stage.copy()
+                ubx_hold = ubx_stage.copy()
+                lbx_hold[int(pos_s[0])] = 1.0
+                ubx_hold[int(pos_s[0])] = 1.0
+                lbx_hold[int(pos_sdot[0])] = 0.0
+                ubx_hold[int(pos_sdot[0])] = 0.0
+                for k in range(hold_start, N):
+                    solver.set(k, "lbx", lbx_hold)
+                    solver.set(k, "ubx", ubx_hold)
+
+            s_guess, sdot_guess = _progress_warm_start(
+                N=N,
+                s0=s0,
+                sdot0=sdot0,
+                T_guess=float(candidate_T),
+                warm_start_progress=warm_start_progress,
+            )
+            x_ref = np.concatenate(
+                [
+                    q_goal,
+                    np.zeros(nv, dtype=float),
+                    np.asarray([1.0, 0.0, float(candidate_T)], dtype=float),
+                ]
+            )
+            x0_full = np.concatenate(
+                [q0, dq0, np.asarray([s0, sdot0, float(candidate_T)], dtype=float)]
+            )
+            x_traj = np.linspace(x0_full, x_ref, N + 1)
+            x_traj[:, nqd + nv] = s_guess
+            x_traj[:, nqd + nv + 1] = sdot_guess
+            x_traj[:, nqd + nv + 2] = float(candidate_T)
+
+            u_guess = np.zeros(n_act + 1, dtype=float)
+            if candidate_T > 1e-9:
+                sdot_target = float(np.clip(np.max(sdot_guess), sdot_min, sdot_max))
+                u_guess[-1] = np.clip((sdot_target - sdot0) / candidate_T, lbu[-1], ubu[-1])
+
+            for k in range(N + 1):
+                solver.set(k, "x", x_traj[k])
+                solver.set(k, "p", p_stage_values[k])
+            solver.constraints_set(0, "lbx", x0_partial)
+            solver.constraints_set(0, "ubx", x0_partial)
+            for k in range(N):
+                solver.set(k, "u", u_guess)
+                yref_k = np.zeros(ny, dtype=float)
+                yref_k[4] = s_guess[k + 1]
+                solver.set(k, "yref", yref_k)
+            solver.set(N, "yref", np.zeros(ny_e, dtype=float))
+
+            status = int(solver.solve())
+            try:
+                cost_value = float(solver.get_cost())
+            except Exception:
+                cost_value = float("inf")
+            try:
+                residuals = np.asarray(solver.get_stats("residuals"), dtype=float).reshape(-1)
+            except Exception:
+                residuals = None
+            try:
+                sqp_iter = int(solver.get_stats("sqp_iter"))
+            except Exception:
+                sqp_iter = None
+            try:
+                qp_iter_stats = np.asarray(solver.get_stats("qp_iter"), dtype=float).reshape(-1)
+            except Exception:
+                qp_iter_stats = None
+
+            attempt = {
+                "status": status,
+                "candidate_T": float(candidate_T),
+                "cost": cost_value,
+                "residuals": residuals,
+                "sqp_iter": sqp_iter,
+                "qp_iter_stats": qp_iter_stats,
+                "candidate_index": candidate_idx,
+            }
+            if (
+                best_attempt is None
+                or int(status) == 0
+                or (
+                    int(best_attempt["status"]) != 0
+                    and (
+                        float(cost_value) < float(best_attempt["cost"])
+                        or (
+                            residuals is not None
+                            and best_attempt["residuals"] is not None
+                            and float(np.linalg.norm(residuals))
+                            < float(np.linalg.norm(best_attempt["residuals"]))
+                        )
+                    )
+                )
+            ):
+                best_attempt = attempt
+                selected_candidate = float(candidate_T)
+            if status == 0:
+                break
+
+        assert best_attempt is not None
+        status = int(best_attempt["status"])
         success = status == 0
-        sqp_iter: Optional[int] = None
-        residuals: Optional[np.ndarray] = None
-        qp_iter_stats: Optional[np.ndarray] = None
-        try:
-            sqp_iter = int(solver.get_stats("sqp_iter"))
-        except Exception:
-            sqp_iter = None
-        try:
-            residuals = np.asarray(solver.get_stats("residuals"), dtype=float).reshape(-1)
-        except Exception:
-            residuals = None
-        try:
-            qp_iter_stats = np.asarray(solver.get_stats("qp_iter"), dtype=float).reshape(-1)
-        except Exception:
-            qp_iter_stats = None
+        sqp_iter = best_attempt["sqp_iter"]
+        residuals = best_attempt["residuals"]
+        qp_iter_stats = best_attempt["qp_iter_stats"]
 
         state = np.zeros((N + 1, nqd + nv + 3), dtype=float)
         control = np.zeros((N, n_act + 1), dtype=float)
@@ -870,6 +1050,9 @@ class CartesianPathFollowingOptimizer(TrajectoryOptimizer):
             "payload_mass": payload_mass_default,
             "payload_com_tcp": payload_com_default.copy(),
             "gravity_world": g_world.copy(),
+            "optimize_time": bool(optimize_time),
+            "fixed_time_candidates_s": np.asarray(candidate_times, dtype=float),
+            "selected_time_candidate_s": float(selected_candidate),
         }
         if sqp_iter is not None:
             diagnostics["sqp_iter"] = sqp_iter

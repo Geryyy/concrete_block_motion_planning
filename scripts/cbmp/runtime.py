@@ -352,6 +352,9 @@ class RuntimeHelpersMixin:
         cfg = CartesianPathFollowingConfig(
             urdf_path=Path(self._analytic_cfg.urdf_path),
             horizon_steps=int(max(20, horizon)),
+            optimize_time=False,
+            fixed_time_duration_s=10.0,
+            fixed_time_duration_candidates=(10.0,),
             code_export_dir=Path(f"/tmp/concrete_block_{profile.lower()}_codegen"),
             solver_json_name=f"{profile.lower()}_ocp.json",
             precompile_on_init=False,

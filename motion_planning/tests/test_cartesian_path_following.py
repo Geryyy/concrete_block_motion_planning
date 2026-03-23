@@ -11,10 +11,11 @@ from motion_planning.trajectory.cartesian_path_following import (
     CartesianPathFollowingConfig,
     CartesianPathFollowingOptimizer,
 )
+from motion_planning.mechanics.analytic import create_crane_config
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_URDF = _REPO_ROOT / "crane_urdf" / "crane.urdf"
+DEFAULT_URDF = Path(create_crane_config().urdf_path)
 
 
 def _acados_ready() -> bool:
@@ -28,7 +29,11 @@ def _acados_ready() -> bool:
     if not src:
         return False
     src_path = Path(src)
-    return (src_path / "lib" / "link_libs.json").exists() and (src_path / "bin" / "t_renderer").exists()
+    return (
+        DEFAULT_URDF.exists()
+        and (src_path / "lib" / "link_libs.json").exists()
+        and (src_path / "bin" / "t_renderer").exists()
+    )
 
 
 def _build_small_motion_states(urdf_path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -90,7 +95,6 @@ def test_cartesian_optimizer_smoke_straight_line() -> None:
     cfg = CartesianPathFollowingConfig(
         urdf_path=DEFAULT_URDF,
         horizon_steps=40,
-        dt=0.1,
         hessian_approx="GAUSS_NEWTON",
         nlp_solver_type="SQP",
         nlp_solver_max_iter=200,
@@ -135,7 +139,6 @@ def test_cartesian_optimizer_with_explicit_ctrl_pts() -> None:
     cfg = CartesianPathFollowingConfig(
         urdf_path=DEFAULT_URDF,
         horizon_steps=40,
-        dt=0.1,
         spline_ctrl_points=n_ctrl,
         hessian_approx="GAUSS_NEWTON",
         nlp_solver_type="SQP",
@@ -204,7 +207,6 @@ def test_cartesian_optimizer_large_motion() -> None:
     cfg = CartesianPathFollowingConfig(
         urdf_path=DEFAULT_URDF,
         horizon_steps=80,
-        dt=0.1,
         hessian_approx="GAUSS_NEWTON",
         nlp_solver_type="SQP",
         nlp_solver_max_iter=300,
@@ -228,3 +230,42 @@ def test_cartesian_optimizer_large_motion() -> None:
     assert np.isfinite(result.state).all()
     assert np.isfinite(result.control).all()
     assert result.diagnostics["xyz_trajectory"].shape == (cfg.horizon_steps + 1, 3)
+
+
+@pytest.mark.skipif(not _acados_ready(), reason="acados/casadi/pinocchio runtime not available")
+def test_cartesian_optimizer_fixed_time_workaround() -> None:
+    """Fixed-time mode keeps the trajectory duration pinned to the requested T."""
+    from motion_planning.core.types import TrajectoryRequest
+
+    cfg = CartesianPathFollowingConfig(
+        urdf_path=DEFAULT_URDF,
+        horizon_steps=60,
+        code_export_dir=Path("/tmp/test_cartesian_pfc_fixed_time_codegen"),
+        solver_json_name="test_cartesian_pfc_fixed_time.json",
+    )
+    q0, q_goal = _build_small_motion_states(DEFAULT_URDF)
+
+    req = TrajectoryRequest(
+        scenario=None,
+        path=None,
+        config={
+            "q0": q0,
+            "q_goal": q_goal,
+            "dq0": np.zeros_like(q0),
+            "optimize_time": False,
+            "fixed_time_duration_s": 10.0,
+            "fixed_time_duration_candidates": (10.0,),
+            "T_min": 10.0,
+            "T_max": 10.0,
+            "nlp_solver_max_iter": 300,
+        },
+    )
+    opt = CartesianPathFollowingOptimizer(cfg)
+    result = opt.optimize(req)
+
+    assert result.success, (
+        f"Fixed-time solver failed: {result.message} (status={result.diagnostics.get('status')})"
+    )
+    assert result.diagnostics["optimize_time"] is False
+    assert float(result.time_s[-1]) == pytest.approx(10.0, abs=1e-6)
+    assert np.allclose(np.asarray(result.diagnostics["T_trajectory"], dtype=float), 10.0, atol=1e-6)

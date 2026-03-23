@@ -35,7 +35,7 @@ def create_crane_config() -> AnalyticModelConfig:
         urdf_path=str(_CRANE_URDF),
         gravity=[0.0, 0.0, -9.81],
         base_frame="K0_mounting_base",
-        target_frame="K8_tool_center_point_tcp",
+        target_frame="K8_tool_center_point",
         actuated_joints=[
             "theta1_slewing_joint",
             "theta2_boom_joint",

@@ -738,9 +738,17 @@ class CartesianPathFollowingOptimizer(TrajectoryOptimizer):
                 idx_list.append(idx_s)
                 lb_list.append(1.0)
                 ub_list.append(1.0)
+            if not optimize_time:
+                idx_list.append(idx_T)
+                lb_list.append(float(T_guess))
+                ub_list.append(float(T_guess))
             ocp.constraints.idxbx_e = np.asarray(idx_list, dtype=int)
             ocp.constraints.lbx_e = np.asarray(lb_list, dtype=float)
             ocp.constraints.ubx_e = np.asarray(ub_list, dtype=float)
+        elif not optimize_time:
+            ocp.constraints.idxbx_e = np.asarray([idx_T], dtype=int)
+            ocp.constraints.lbx_e = np.asarray([float(T_guess)], dtype=float)
+            ocp.constraints.ubx_e = np.asarray([float(T_guess)], dtype=float)
 
         # ── Solver options ────────────────────────────────────────────────────
         ocp.solver_options.qp_solver = "PARTIAL_CONDENSING_HPIPM"

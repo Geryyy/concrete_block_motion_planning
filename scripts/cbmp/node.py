@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 
 import rclpy
 from rclpy.action import ActionClient
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from tf2_ros import Buffer, TransformListener
@@ -223,6 +224,7 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
     def _initialize_execution_io(self) -> None:
         if not self._execution_enabled:
             return
+        self._execution_cb_group = ReentrantCallbackGroup()
         if self._execution_backend == "action":
             if not self._execution_action_name:
                 self.get_logger().warn(
@@ -234,6 +236,7 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
                 self,
                 FollowJointTrajectory,
                 self._execution_action_name,
+                callback_group=self._execution_cb_group,
             )
             if self._execution_switch_controller:
                 if not self._execution_switch_service:
@@ -245,6 +248,7 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
                     self._switch_controller_client = self.create_client(
                         SwitchController,
                         self._execution_switch_service,
+                        callback_group=self._execution_cb_group,
                     )
             return
 

@@ -24,10 +24,34 @@ class TimberFollowJointTrajectoryProxy(Node):
             "target_commands_topic", "/trajectory_controllers/commands"
         )
         self.declare_parameter("joint_states_topic", "/joint_states")
+        self.declare_parameter(
+            "target_joint_names",
+            [
+                "theta1_slewing_joint",
+                "theta2_boom_joint",
+                "theta3_arm_joint",
+                "q4_big_telescope",
+                "theta6_tip_joint",
+                "theta7_tilt_joint",
+                "theta8_rotator_joint",
+                "q9_left_rail_joint",
+            ],
+        )
+        self.declare_parameter("input_compat_gripper_joint", "theta10_outer_jaw_joint")
+        self.declare_parameter("output_gripper_joint", "q9_left_rail_joint")
 
         proxy_action_name = str(self.get_parameter("proxy_action_name").value)
         target_commands_topic = str(self.get_parameter("target_commands_topic").value)
         joint_states_topic = str(self.get_parameter("joint_states_topic").value)
+        self._target_joint_names = [
+            str(name) for name in self.get_parameter("target_joint_names").value
+        ]
+        self._input_compat_gripper_joint = str(
+            self.get_parameter("input_compat_gripper_joint").value
+        )
+        self._output_gripper_joint = str(
+            self.get_parameter("output_gripper_joint").value
+        )
         self._latest_joint_state: Dict[str, float] = {}
 
         self.create_subscription(JointState, joint_states_topic, self._on_joint_state, 10)
@@ -75,11 +99,13 @@ class TimberFollowJointTrajectoryProxy(Node):
 
         expanded_trajectory = self._expand_trajectory(trajectory)
         first_point = expanded_trajectory.points[0]
-        if len(first_point.velocities) != 8:
+        expected_dim = len(expanded_trajectory.joint_names)
+        if len(first_point.velocities) != expected_dim:
             goal_handle.abort()
             result.error_code = FollowJointTrajectory.Result.INVALID_GOAL
             result.error_string = (
-                "TrajectoryForwardController expects 8 velocity commands per point; "
+                "TrajectoryForwardController expects "
+                f"{expected_dim} velocity commands per point; "
                 f"received {len(first_point.velocities)}."
             )
             self.get_logger().error(result.error_string)
@@ -129,30 +155,29 @@ class TimberFollowJointTrajectoryProxy(Node):
         stop.header.stamp = self.get_clock().now().to_msg()
         stop.joint_names = list(joint_names)
         point = JointTrajectoryPoint()
-        point.velocities = [0.0] * 8
+        point.velocities = [0.0] * len(joint_names)
         stop.points = [point]
         self._commands_pub.publish(stop)
 
     def _expand_trajectory(self, trajectory: JointTrajectory) -> JointTrajectory:
         if not trajectory.points:
             return trajectory
-        if trajectory.points[0].velocities and len(trajectory.points[0].velocities) == 8:
+        expected_dim = len(self._target_joint_names)
+        if (
+            trajectory.joint_names == self._target_joint_names
+            and trajectory.points[0].velocities
+            and len(trajectory.points[0].velocities) == expected_dim
+        ):
             return trajectory
 
         output = JointTrajectory()
         output.header = trajectory.header
-        output.joint_names = [
-            "theta1_slewing_joint",
-            "theta2_boom_joint",
-            "theta3_arm_joint",
-            "q4_big_telescope",
-            "theta6_tip_joint",
-            "theta7_tilt_joint",
-            "theta8_rotator_joint",
-            "theta10_outer_jaw_joint",
-        ]
+        output.joint_names = list(self._target_joint_names)
 
-        current_outer_jaw = self._latest_joint_state.get("theta10_outer_jaw_joint", 1.5708)
+        current_gripper = self._latest_joint_state.get(
+            self._output_gripper_joint,
+            self._latest_joint_state.get(self._input_compat_gripper_joint, 0.0),
+        )
         current_tip = self._latest_joint_state.get("theta6_tip_joint", 0.0)
         current_tilt = self._latest_joint_state.get("theta7_tilt_joint", 0.0)
 
@@ -164,6 +189,19 @@ class TimberFollowJointTrajectoryProxy(Node):
             vel_map = self._to_map(trajectory.joint_names, point.velocities)
             acc_map = self._to_map(trajectory.joint_names, point.accelerations)
 
+            compat_gripper_position = pos_map.get(
+                self._output_gripper_joint,
+                pos_map.get(self._input_compat_gripper_joint, current_gripper),
+            )
+            compat_gripper_velocity = vel_map.get(
+                self._output_gripper_joint,
+                vel_map.get(self._input_compat_gripper_joint, 0.0),
+            )
+            compat_gripper_acceleration = acc_map.get(
+                self._output_gripper_joint,
+                acc_map.get(self._input_compat_gripper_joint, 0.0),
+            )
+
             expanded.positions = [
                 pos_map.get("theta1_slewing_joint", 0.0),
                 pos_map.get("theta2_boom_joint", 0.0),
@@ -172,7 +210,7 @@ class TimberFollowJointTrajectoryProxy(Node):
                 pos_map.get("theta6_tip_joint", current_tip),
                 pos_map.get("theta7_tilt_joint", current_tilt),
                 pos_map.get("theta8_rotator_joint", 0.0),
-                pos_map.get("theta10_outer_jaw_joint", current_outer_jaw),
+                compat_gripper_position,
             ]
             if point.velocities:
                 expanded.velocities = [
@@ -183,7 +221,7 @@ class TimberFollowJointTrajectoryProxy(Node):
                     vel_map.get("theta6_tip_joint", 0.0),
                     vel_map.get("theta7_tilt_joint", 0.0),
                     vel_map.get("theta8_rotator_joint", 0.0),
-                    vel_map.get("theta10_outer_jaw_joint", 0.0),
+                    compat_gripper_velocity,
                 ]
             if point.accelerations:
                 expanded.accelerations = [
@@ -194,7 +232,7 @@ class TimberFollowJointTrajectoryProxy(Node):
                     acc_map.get("theta6_tip_joint", 0.0),
                     acc_map.get("theta7_tilt_joint", 0.0),
                     acc_map.get("theta8_rotator_joint", 0.0),
-                    acc_map.get("theta10_outer_jaw_joint", 0.0),
+                    compat_gripper_acceleration,
                 ]
             output.points.append(expanded)
         return output

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Dict
 
@@ -39,6 +40,7 @@ class TimberFollowJointTrajectoryProxy(Node):
         )
         self.declare_parameter("input_compat_gripper_joint", "theta10_outer_jaw_joint")
         self.declare_parameter("output_gripper_joint", "q9_left_rail_joint")
+        self.declare_parameter("named_pose_sample_period_s", 0.05)
 
         proxy_action_name = str(self.get_parameter("proxy_action_name").value)
         target_commands_topic = str(self.get_parameter("target_commands_topic").value)
@@ -51,6 +53,9 @@ class TimberFollowJointTrajectoryProxy(Node):
         )
         self._output_gripper_joint = str(
             self.get_parameter("output_gripper_joint").value
+        )
+        self._named_pose_sample_period_s = max(
+            0.01, float(self.get_parameter("named_pose_sample_period_s").value)
         )
         self._latest_joint_state: Dict[str, float] = {}
 
@@ -235,7 +240,46 @@ class TimberFollowJointTrajectoryProxy(Node):
                     compat_gripper_acceleration,
                 ]
             output.points.append(expanded)
+        if len(output.points) == 1:
+            return self._densify_single_point_trajectory(output)
         return output
+
+    def _densify_single_point_trajectory(
+        self, trajectory: JointTrajectory
+    ) -> JointTrajectory:
+        target_point = trajectory.points[0]
+        duration_s = max(0.1, self._duration_to_seconds(target_point.time_from_start))
+        sample_period_s = min(self._named_pose_sample_period_s, duration_s)
+        num_segments = max(1, int(math.ceil(duration_s / sample_period_s)))
+
+        start_positions = [
+            self._latest_joint_state.get(name, target_point.positions[idx])
+            for idx, name in enumerate(trajectory.joint_names)
+        ]
+        target_positions = [float(v) for v in target_point.positions]
+
+        dense = JointTrajectory()
+        dense.header = trajectory.header
+        dense.joint_names = list(trajectory.joint_names)
+
+        for step in range(num_segments + 1):
+            alpha = float(step) / float(num_segments)
+            point = JointTrajectoryPoint()
+            point.positions = [
+                (1.0 - alpha) * start + alpha * goal
+                for start, goal in zip(start_positions, target_positions)
+            ]
+            if duration_s > 1e-6:
+                point.velocities = [
+                    (goal - start) / duration_s if step < num_segments else 0.0
+                    for start, goal in zip(start_positions, target_positions)
+                ]
+            else:
+                point.velocities = [0.0] * len(target_positions)
+            point.time_from_start = self._seconds_to_duration(alpha * duration_s)
+            dense.points.append(point)
+
+        return dense
 
     @staticmethod
     def _to_map(names: list[str], values) -> Dict[str, float]:
@@ -250,6 +294,18 @@ class TimberFollowJointTrajectoryProxy(Node):
     @staticmethod
     def _duration_to_seconds(duration_msg) -> float:
         return float(duration_msg.sec) + float(duration_msg.nanosec) / 1e9
+
+    @staticmethod
+    def _seconds_to_duration(seconds: float):
+        sec = int(seconds)
+        nanosec = int(round((seconds - sec) * 1e9))
+        if nanosec >= 1_000_000_000:
+            sec += 1
+            nanosec -= 1_000_000_000
+        duration = type(JointTrajectoryPoint().time_from_start)()
+        duration.sec = sec
+        duration.nanosec = nanosec
+        return duration
 
 
 def main(args=None) -> None:

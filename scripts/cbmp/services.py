@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any, Dict, Tuple
 
 import numpy as np
-import rclpy
 from concrete_block_perception.srv import GetCoarseBlocks
 
 from concrete_block_motion_planning.srv import (
@@ -48,15 +47,10 @@ class ServiceHandlersMixin:
         req.force_refresh = False
         req.timeout_s = max(0.0, float(timeout_s))
         req.query_stamp = self.get_clock().now().to_msg()
-        future = self._get_coarse_blocks_client.call_async(req)
-        rclpy.spin_until_future_complete(
-            self,
-            future,
-            timeout_sec=max(1.0, float(timeout_s) + 0.5),
-        )
-        if not future.done():
-            return planning_context, "world model request timed out; fallback to manual planning"
-        res = future.result()
+        try:
+            res = self._get_coarse_blocks_client.call(req)
+        except Exception as exc:
+            return planning_context, f"world model request timed out; fallback to manual planning ({exc})"
         if res is None:
             return planning_context, "world model request returned no response; fallback to manual planning"
         if not res.success:

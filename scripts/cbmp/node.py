@@ -222,6 +222,7 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
         )
 
     def _initialize_execution_io(self) -> None:
+        self._service_cb_group = ReentrantCallbackGroup()
         if not self._execution_enabled:
             return
         self._execution_cb_group = ReentrantCallbackGroup()
@@ -273,9 +274,11 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
     def _initialize_world_model_io(self) -> None:
         if not self._world_model_get_coarse_blocks_service:
             return
+        self._world_model_cb_group = ReentrantCallbackGroup()
         self._get_coarse_blocks_client = self.create_client(
             GetCoarseBlocks,
             self._world_model_get_coarse_blocks_service,
+            callback_group=self._world_model_cb_group,
         )
 
     def _initialize_robot_description_io(self) -> None:
@@ -341,31 +344,37 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
             PlanGeometricPath,
             "~/plan_geometric_path",
             self._handle_plan_geometric,
+            callback_group=self._service_cb_group,
         )
         self._plan_and_compute_srv = self.create_service(
             PlanAndComputeTrajectory,
             "~/plan_and_compute_trajectory",
             self._handle_plan_and_compute_trajectory,
+            callback_group=self._service_cb_group,
         )
         self._compute_traj_srv = self.create_service(
             ComputeTrajectory,
             "~/compute_trajectory",
             self._handle_compute_trajectory,
+            callback_group=self._service_cb_group,
         )
         self._execute_traj_srv = self.create_service(
             ExecuteTrajectory,
             "~/execute_trajectory",
             self._handle_execute_trajectory,
+            callback_group=self._service_cb_group,
         )
         self._execute_named_cfg_srv = self.create_service(
             ExecuteNamedConfiguration,
             "~/execute_named_configuration",
             self._handle_execute_named_configuration,
+            callback_group=self._service_cb_group,
         )
         self._next_assembly_task_srv = self.create_service(
             GetNextAssemblyTask,
             "~/get_next_assembly_task",
             self._handle_get_next_assembly_task,
+            callback_group=self._service_cb_group,
         )
 
     def _log_startup(self) -> None:

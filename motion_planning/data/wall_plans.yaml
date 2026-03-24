@@ -5,8 +5,8 @@ wall_plans:
   basic_interlocking_3_2:
     sequence:
       - id: "B0"
-        absolute_position: [0.0, 0.0, 0.3]
-        yaw_deg: 0.0
+        absolute_position: [-11.025, 0.239662, 3.0]
+        yaw_deg: 96.2006
       - id: "B1"
         relative_to: "B0"
         offset: [0.62, 0.0, 0.0]
@@ -23,4 +23,3 @@ wall_plans:
         relative_to: "T0"
         offset: [0.62, 0.0, 0.0]
         yaw_deg: 0.0
-

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Dict
 
-import rclpy
-import time
 import tf2_geometry_msgs
 from builtin_interfaces.msg import Time as TimeMsg
 from geometry_msgs.msg import Point, PoseStamped
@@ -87,22 +85,20 @@ class TimberPlannerBackend(PlannerBackend):
         req.t_end = 0.0
         req.publish_path = True
 
-        future = self._client.call_async(req)
         timeout_s = max(5.0, float(trajectory_timeout_s))
-        deadline = time.monotonic() + timeout_s
-        while not future.done() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        if not future.done():
+        self._client.service_is_ready()
+        try:
+            res = self._client.call(req, timeout_sec=timeout_s)
+        except TypeError:
+            # Older rclpy versions expose call() without timeout support.
+            res = self._client.call(req)
+        except Exception as exc:
             return BackendPlanResult(
                 success=False,
-                message=(
-                    "Timed out waiting for timber backend trajectory "
-                    f"(timeout={timeout_s:.1f}s)."
-                ),
+                message=f"Timed out waiting for timber backend trajectory (timeout={timeout_s:.1f}s): {exc}",
                 trajectory=JointTrajectory(),
                 cartesian_path=NavPath(),
             )
-        res = future.result()
         if res is None:
             return BackendPlanResult(
                 success=False,

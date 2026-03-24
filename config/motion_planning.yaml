@@ -1,5 +1,10 @@
 concrete_block_motion_planning_node:
   ros__parameters:
+    planner:
+      backend: "concrete"
+      timber_a2b_service: "a2b_movement"
+      timber_goal_frame: "K0_mounting_base"
+      timber_move_empty_target_z: 2.36
     default_geometric_method: "POWELL"
     # Concrete-block stack keeps its split pipeline:
     # geometric path planning + acados-based path-following trajectory OCP.

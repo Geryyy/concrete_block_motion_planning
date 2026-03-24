@@ -3,10 +3,12 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 import rclpy
-from rclpy.node import Node
 from rclpy.action import ActionClient
+from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from tf2_ros import Buffer, TransformListener
 from std_msgs.msg import String
+from nav_msgs.msg import Path as NavPath
 from trajectory_msgs.msg import JointTrajectory
 from control_msgs.action import FollowJointTrajectory
 from controller_manager_msgs.srv import SwitchController
@@ -22,8 +24,12 @@ from concrete_block_motion_planning.srv import (
 )
 
 from .config import NodeConfig, declare_and_load_config
+from .execution import ExecutionAdapter
+from .named_configurations import NamedConfigurationResolver
+from .backends import ConcretePlannerBackend, TimberPlannerBackend
 from .runtime import RuntimeHelpersMixin
 from .services import ServiceHandlersMixin
+from .results import PlannerCapabilities
 from .state import MotionPlanningState, RuntimeStatus
 from .types import StoredGeometricPlan, StoredTrajectory, WallPlanTask
 
@@ -40,15 +46,26 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
         self._bind_config_aliases()
 
         self._status_pub = self.create_publisher(String, "~/trajectory_backend_status", 10)
+        self._planned_path_pub = self.create_publisher(NavPath, "~/planned_path", 10)
         self._trajectory_cmd_pub = None
         self._trajectory_action_client = None
         self._switch_controller_client = None
         self._get_coarse_blocks_client = None
         self._robot_description_sub = None
+        self._tf_buffer = None
+        self._tf_listener = None
         self._robot_description_xml = ""
         self._initialize_execution_io()
         self._initialize_world_model_io()
         self._initialize_robot_description_io()
+        self._initialize_planner_backend_io()
+        self._execution_adapter = ExecutionAdapter(self)
+        self._named_configuration_resolver = NamedConfigurationResolver(
+            named_configurations=self._state.named_configurations,
+            trajectories=self._state.trajectories,
+        )
+        self._planner_backend = self._create_planner_backend()
+        self._planner_capabilities: PlannerCapabilities = self._planner_backend.capabilities
 
         self._initialize_runtime_and_data()
         self._register_services()
@@ -122,6 +139,10 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
         self._runtime_status.geometric_runtime_reason = str(value)
 
     def _bind_config_aliases(self) -> None:
+        self._planner_backend_name = self._cfg.planner_backend.strip().lower()
+        self._timber_a2b_service = self._cfg.timber_a2b_service.strip()
+        self._timber_goal_frame = self._cfg.timber_goal_frame.strip()
+        self._timber_move_empty_target_z = float(self._cfg.timber_move_empty_target_z)
         self._default_geometric_method = self._cfg.default_geometric_method
         self._default_trajectory_method = self._cfg.default_trajectory_method
         self._n_points = self._cfg.path_interpolation_points
@@ -159,9 +180,29 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
 
     def _initialize_runtime_and_data(self) -> None:
         self._ensure_motion_planning_module_path()
-        self._geometric_runtime_available, self._geometric_runtime_reason = self._check_geometric_runtime()
-        self._trajectory_runtime_available, self._trajectory_runtime_reason = self._check_trajectory_runtime()
-        self._initialize_planning_runtime()
+        if self._planner_backend_name == "concrete":
+            self._geometric_runtime_available, self._geometric_runtime_reason = self._check_geometric_runtime()
+            self._trajectory_runtime_available, self._trajectory_runtime_reason = self._check_trajectory_runtime()
+            if self._robot_description_topic and not self._robot_description_xml:
+                self._planning_runtime_ready = False
+                self._planning_runtime_reason = (
+                    f"waiting for robot_description on '{self._robot_description_topic}'"
+                )
+            else:
+                self._initialize_planning_runtime()
+        else:
+            self._geometric_runtime_available = False
+            self._geometric_runtime_reason = (
+                f"geometric stage owned by planner backend '{self._planner_backend_name}'"
+            )
+            self._trajectory_runtime_available = True
+            self._trajectory_runtime_reason = (
+                f"trajectory generation handled by planner backend '{self._planner_backend_name}'"
+            )
+            self._planning_runtime_ready = True
+            self._planning_runtime_reason = (
+                f"handled by planner backend '{self._planner_backend_name}'"
+            )
 
         self._load_named_configurations_from_file(self._named_configurations_file)
         self._load_wall_plans_from_file(self._wall_plan_file)
@@ -170,6 +211,7 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
             "AVAILABLE" if self._planning_runtime_ready else "UNAVAILABLE",
             (
                 f"planning_runtime={self._planning_runtime_ready} ({self._planning_runtime_reason}); "
+                f"planner_backend={self._planner_backend.backend_name}; "
                 f"geometric_backend={self._geometric_runtime_available} ({self._geometric_runtime_reason}); "
                 f"trajectory_backend={self._trajectory_runtime_available} ({self._trajectory_runtime_reason}); "
                 f"named_configurations={len(self._named_configurations)}; "
@@ -248,7 +290,29 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
             qos,
         )
 
+    def _initialize_planner_backend_io(self) -> None:
+        if self._planner_backend_name != "timber":
+            return
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
+
+    def _create_planner_backend(self):
+        if self._planner_backend_name == "timber":
+            return TimberPlannerBackend(self)
+        if self._planner_backend_name not in ("", "concrete"):
+            self.get_logger().warn(
+                f"Unknown planner.backend '{self._planner_backend_name}', falling back to concrete."
+            )
+            self._planner_backend_name = "concrete"
+        return ConcretePlannerBackend(self)
+
+    @staticmethod
+    def _empty_trajectory() -> JointTrajectory:
+        return JointTrajectory()
+
     def _on_robot_description(self, msg: String) -> None:
+        if self._planner_backend_name != "concrete":
+            return
         xml = str(msg.data)
         if not xml or xml == self._robot_description_xml:
             return
@@ -313,7 +377,9 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
             f"named_configurations={len(self._named_configurations)} | "
             f"wall_plans={len(self._wall_plans)}"
         )
-        if not self._planning_runtime_ready:
+        if not self._planning_runtime_ready and not (
+            self._robot_description_topic and not self._robot_description_xml
+        ):
             self.get_logger().warn(f"Planning runtime disabled: {self._planning_runtime_reason}")
 
 

@@ -9,6 +9,10 @@ from rclpy.parameter import Parameter
 
 @dataclass(frozen=True)
 class NodeConfig:
+    planner_backend: str
+    timber_a2b_service: str
+    timber_goal_frame: str
+    timber_move_empty_target_z: float
     default_geometric_method: str
     default_trajectory_method: str
     path_interpolation_points: int
@@ -49,6 +53,10 @@ def _vec3_or_default(
 
 
 def declare_and_load_config(node: Node) -> NodeConfig:
+    node.declare_parameter("planner.backend", "concrete")
+    node.declare_parameter("planner.timber_a2b_service", "a2b_movement")
+    node.declare_parameter("planner.timber_goal_frame", "K0_mounting_base")
+    node.declare_parameter("planner.timber_move_empty_target_z", 2.36)
     node.declare_parameter("default_geometric_method", "POWELL")
     node.declare_parameter("default_trajectory_method", "ACADOS_PATH_FOLLOWING")
     node.declare_parameter("path_interpolation_points", 81)
@@ -102,6 +110,12 @@ def declare_and_load_config(node: Node) -> NodeConfig:
     node.declare_parameter("wall_plan_frame_id", "world")
 
     return NodeConfig(
+        planner_backend=str(node.get_parameter("planner.backend").value),
+        timber_a2b_service=str(node.get_parameter("planner.timber_a2b_service").value),
+        timber_goal_frame=str(node.get_parameter("planner.timber_goal_frame").value),
+        timber_move_empty_target_z=float(
+            node.get_parameter("planner.timber_move_empty_target_z").value
+        ),
         default_geometric_method=str(
             node.get_parameter("default_geometric_method").value
         ),

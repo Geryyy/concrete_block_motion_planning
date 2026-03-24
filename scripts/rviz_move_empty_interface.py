@@ -51,6 +51,8 @@ class RvizMoveEmptyInterface(Node):
         self.declare_parameter("enable_topic", "/cb_move_empty/enable")
         self.declare_parameter("require_enable", True)
         self.declare_parameter("fallback_direct_path_on_geometric_failure", True)
+        self.declare_parameter("use_world_model", False)
+        self.declare_parameter("validate_dynamics", False)
 
         self._goal_topic = str(self.get_parameter("goal_topic").value)
         self._world_frame = str(self.get_parameter("world_frame").value)
@@ -64,6 +66,8 @@ class RvizMoveEmptyInterface(Node):
         self._fallback_direct_path_on_geometric_failure = bool(
             self.get_parameter("fallback_direct_path_on_geometric_failure").value
         )
+        self._use_world_model = bool(self.get_parameter("use_world_model").value)
+        self._validate_dynamics = bool(self.get_parameter("validate_dynamics").value)
         self._enabled = not self._require_enable
 
         self._tf_buffer = Buffer()
@@ -108,6 +112,8 @@ class RvizMoveEmptyInterface(Node):
             f"goal_topic={self._goal_topic} | world_frame={self._world_frame} | "
             f"tool_frame={self._tool_frame} | dry_run={self._dry_run} | "
             f"use_combined_service={self._use_combined_service} | "
+            f"use_world_model={self._use_world_model} | "
+            f"validate_dynamics={self._validate_dynamics} | "
             f"require_enable={self._require_enable} | enable_topic={self._enable_topic} | "
             f"fallback_direct_path={self._fallback_direct_path_on_geometric_failure}"
         )
@@ -182,8 +188,8 @@ class RvizMoveEmptyInterface(Node):
             req = PlanAndComputeTrajectory.Request()
             req.start_pose = start_pose
             req.goal_pose = goal_pose
-            req.use_world_model = True
-            req.validate_dynamics = True
+            req.use_world_model = self._use_world_model
+            req.validate_dynamics = self._validate_dynamics
             req.geometric_timeout_s = 5.0
             req.trajectory_timeout_s = 10.0
             if self._geometric_method:
@@ -250,7 +256,7 @@ class RvizMoveEmptyInterface(Node):
         req.geometric_plan_id = res.geometric_plan_id
         if self._trajectory_method:
             req.method = self._trajectory_method
-        req.validate_dynamics = True
+        req.validate_dynamics = self._validate_dynamics
 
         self._call_compute(req)
 

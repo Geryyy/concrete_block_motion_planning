@@ -47,6 +47,16 @@ def generate_launch_description():
                 ],
             ),
             DeclareLaunchArgument("use_sim_time", default_value="false"),
+            DeclareLaunchArgument("planner_backend", default_value="concrete"),
+            DeclareLaunchArgument(
+                "planner_timber_a2b_service", default_value="a2b_movement"
+            ),
+            DeclareLaunchArgument(
+                "planner_timber_goal_frame", default_value="K0_mounting_base"
+            ),
+            DeclareLaunchArgument(
+                "planner_timber_move_empty_target_z", default_value="2.36"
+            ),
             DeclareLaunchArgument(
                 "motion_planning_params_file", default_value=config_file
             ),
@@ -95,6 +105,22 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     LaunchConfiguration("motion_planning_params_file"),
+                    {"planner.backend": LaunchConfiguration("planner_backend")},
+                    {
+                        "planner.timber_a2b_service": LaunchConfiguration(
+                            "planner_timber_a2b_service"
+                        )
+                    },
+                    {
+                        "planner.timber_goal_frame": LaunchConfiguration(
+                            "planner_timber_goal_frame"
+                        )
+                    },
+                    {
+                        "planner.timber_move_empty_target_z": LaunchConfiguration(
+                            "planner_timber_move_empty_target_z"
+                        )
+                    },
                     {
                         "default_trajectory_method": LaunchConfiguration(
                             "default_trajectory_method"

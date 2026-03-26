@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any, Dict, Tuple
 
 import numpy as np
-from concrete_block_perception.srv import GetCoarseBlocks
+from concrete_block_perception.msg import PlanningSceneObject
+from concrete_block_perception.srv import GetCoarseBlocks, GetPlanningScene
 
 from concrete_block_motion_planning.srv import (
     ComputeTrajectory,
@@ -31,24 +32,25 @@ class ServiceHandlersMixin:
             "reference_block_id": reference_block_id.strip(),
             "use_world_model": bool(use_world_model),
             "world_model_blocks": [],
+            "planning_scene_objects": [],
         }
         if not use_world_model:
             return planning_context, "world model disabled by request"
 
-        if self._get_coarse_blocks_client is None:
-            return planning_context, "world model service client not initialized; fallback to manual planning"
-        if not self._get_coarse_blocks_client.wait_for_service(timeout_sec=1.0):
+        if self._get_planning_scene_client is None:
+            return planning_context, "planning-scene service client not initialized; fallback to manual planning"
+        if not self._get_planning_scene_client.wait_for_service(timeout_sec=1.0):
             return planning_context, (
-                f"world model service '{self._world_model_get_coarse_blocks_service}' unavailable; "
+                f"planning-scene service '{self._world_model_get_planning_scene_service}' unavailable; "
                 "fallback to manual planning"
             )
 
-        req = GetCoarseBlocks.Request()
+        req = GetPlanningScene.Request()
         req.force_refresh = False
         req.timeout_s = max(0.0, float(timeout_s))
         req.query_stamp = self.get_clock().now().to_msg()
         try:
-            res = self._get_coarse_blocks_client.call(req)
+            res = self._get_planning_scene_client.call(req)
         except Exception as exc:
             return planning_context, f"world model request timed out; fallback to manual planning ({exc})"
         if res is None:
@@ -56,18 +58,32 @@ class ServiceHandlersMixin:
         if not res.success:
             return planning_context, f"world model request failed: {res.message}; fallback to manual planning"
 
+        scene_payload = []
         block_payload = []
-        for b in res.blocks.blocks:
-            block_payload.append(
-                {
-                    "id": str(b.id),
-                    "pose": b.pose,
-                    "task_status": int(b.task_status),
-                    "pose_status": int(b.pose_status),
-                }
-            )
+        for obj in res.scene.objects:
+            payload = {
+                "id": str(obj.id),
+                "frame_id": str(obj.frame_id),
+                "pose": obj.pose,
+                "shape_type": int(obj.shape_type),
+                "source_type": int(obj.source_type),
+                "dimensions": (
+                    float(obj.dimensions.x),
+                    float(obj.dimensions.y),
+                    float(obj.dimensions.z),
+                ),
+                "task_status": int(obj.task_status),
+                "pose_status": int(obj.pose_status),
+                "confidence": float(obj.confidence),
+            }
+            scene_payload.append(payload)
+            if int(obj.source_type) == int(PlanningSceneObject.SOURCE_BLOCK):
+                block_payload.append(payload)
+        planning_context["planning_scene_objects"] = scene_payload
         planning_context["world_model_blocks"] = block_payload
-        return planning_context, f"world model ok ({len(block_payload)} blocks)"
+        return planning_context, (
+            f"world model ok ({len(scene_payload)} objects, {len(block_payload)} blocks)"
+        )
 
     def _handle_plan_geometric(
         self,
@@ -114,6 +130,8 @@ class ServiceHandlersMixin:
         request: PlanAndComputeTrajectory.Request,
         response: PlanAndComputeTrajectory.Response,
     ) -> PlanAndComputeTrajectory.Response:
+        geometric_method = request.geometric_method.strip() or self._default_geometric_method
+        trajectory_method = request.trajectory_method.strip() or self._default_trajectory_method
         planning_context, context_msg = self._resolve_planning_context(
             target_block_id=request.target_block_id,
             reference_block_id=request.reference_block_id,
@@ -123,9 +141,9 @@ class ServiceHandlersMixin:
         result = self._planner_backend.plan_move_empty(
             start_pose=request.start_pose,
             goal_pose=request.goal_pose,
-            geometric_method=request.geometric_method,
+            geometric_method=geometric_method,
             geometric_timeout_s=float(request.geometric_timeout_s),
-            trajectory_method=request.trajectory_method,
+            trajectory_method=trajectory_method,
             trajectory_timeout_s=float(request.trajectory_timeout_s),
             validate_dynamics=bool(request.validate_dynamics),
             planning_context={
@@ -147,15 +165,29 @@ class ServiceHandlersMixin:
                 message=result.message,
                 method=self._planner_backend.backend_name.upper(),
                 geometric_plan_id=result.geometric_plan_id,
+                cartesian_path=result.cartesian_path,
             )
             response.trajectory_id = trajectory_id
+            response.cartesian_path = result.cartesian_path
         response.message = (
             f"{result.message} | planning_context={context_msg}"
             if context_msg
             else result.message
         )
+        if not result.success:
+            self.get_logger().warn(
+                "PlanAndComputeTrajectory aborted | "
+                f"backend={self._planner_backend.backend_name} "
+                f"geometric_method={geometric_method} "
+                f"trajectory_method={trajectory_method} "
+                f"target={request.target_block_id or '<none>'} "
+                f"reference={request.reference_block_id or '<none>'} "
+                f"message={response.message}"
+            )
         if result.success and result.cartesian_path is not None:
             self._planned_path_pub.publish(result.cartesian_path)
+            if result.cartesian_path.poses:
+                self._planned_trajectory_path_pub.publish(result.cartesian_path)
         return response
 
     def _handle_compute_trajectory(
@@ -206,6 +238,59 @@ class ServiceHandlersMixin:
         start_pose = path.poses[0]
         goal_pose = path.poses[-1]
 
+        if method_upper in (
+            "TOPPRA_PATH_FOLLOWING",
+            "TOPPRA",
+            "TIME_PARAMETERIZED_PATH_FOLLOWING",
+        ):
+            start_ok, q_start, start_msg = self._solve_canonical_q_from_pose(start_pose)
+            if not start_ok:
+                response.success = False
+                response.message = f"Failed to solve canonical start IK/steady-state: {start_msg}"
+                return response
+
+            goal_ok, q_goal, goal_msg = self._solve_canonical_q_from_pose(goal_pose)
+            if not goal_ok:
+                response.success = False
+                response.message = f"Failed to solve canonical goal IK/steady-state: {goal_msg}"
+                return response
+            try:
+                stored = self._build_joint_space_cartesian_trajectory(
+                    path=path,
+                    geometric_plan_id=geometric_plan_id,
+                    method=method_upper,
+                    q_start=q_start,
+                    q_goal=q_goal,
+                )
+            except Exception as exc:
+                response.success = False
+                response.message = (
+                    "TOPP-RA trajectory generation failed in concrete joint-space stage: "
+                    f"{exc} | start_q={np.array2string(np.asarray(q_start, dtype=float), precision=3, suppress_small=True)} "
+                    f"| goal_q={np.array2string(np.asarray(q_goal, dtype=float), precision=3, suppress_small=True)} "
+                    f"| start_q_named={self._format_named_joint_vector(self._canonical_online_joint_names(), q_start)} "
+                    f"| goal_q_named={self._format_named_joint_vector(self._canonical_online_joint_names(), q_goal)} "
+                    f"| path_points={len(path.poses)}"
+                )
+                self._publish_backend_status("UNAVAILABLE", response.message)
+                return response
+            try:
+                self._trajectories[stored.trajectory_id] = stored
+                response.success = True
+                response.trajectory_id = stored.trajectory_id
+                response.trajectory = stored.trajectory
+                response.message = stored.message
+                if stored.cartesian_path.poses:
+                    self._planned_path_pub.publish(stored.cartesian_path)
+                    self._planned_trajectory_path_pub.publish(stored.cartesian_path)
+                self._publish_backend_status("AVAILABLE", stored.message)
+                return response
+            except Exception as exc:
+                response.success = False
+                response.message = f"TOPP-RA trajectory staging failed: {exc}"
+                self._publish_backend_status("UNAVAILABLE", response.message)
+                return response
+
         start_ok, q_start, start_msg = self._solve_reduced_q_from_pose(start_pose)
         if not start_ok:
             response.success = False
@@ -241,84 +326,12 @@ class ServiceHandlersMixin:
             self._publish_backend_status("AVAILABLE", stored.message)
             return response
 
-        ctrl_pts_xyz, ctrl_pts_yaw = self._extract_control_points(path)
-
-        try:
-            optimizer, optimizer_kind = self._get_trajectory_optimizer(method)
-            from motion_planning.core.types import TrajectoryRequest
-
-            req_cfg: Dict[str, Any] = {
-                "q0": q_start,
-                "q_goal": q_goal,
-                "dq0": np.zeros_like(q_start),
-                "ctrl_pts_xyz": ctrl_pts_xyz,
-                "ctrl_pts_yaw": ctrl_pts_yaw,
-                "spline_ctrl_points": int(ctrl_pts_xyz.shape[0]),
-                "acados_verbose": bool(self._traj_acados_verbose),
-                # Work around the current free-time OCP sensitivity by solving
-                # a fixed-duration path-following problem for runtime use.
-                "optimize_time": False,
-                "fixed_time_duration_s": 10.0,
-                "fixed_time_duration_candidates": (10.0,),
-                "T_min": 10.0,
-                "T_max": 10.0,
-            }
-
-            if "FAST" in method_upper:
-                req_cfg.update(
-                    {
-                        "nlp_solver_max_iter": 150,
-                        "qp_solver_iter_max": 80,
-                        "terminal_hold_steps": 0,
-                    }
-                )
-            elif "STABLE" in method_upper or "COMMISSION" in method_upper:
-                req_cfg.update(
-                    {
-                        "nlp_solver_max_iter": 350,
-                        "qp_solver_iter_max": 140,
-                        "terminal_hold_steps": 4,
-                    }
-                )
-
-            if request.timeout_s > 0.0:
-                req_cfg["nlp_solver_max_iter"] = max(
-                    int(req_cfg.get("nlp_solver_max_iter", 300)),
-                    int(40.0 * float(request.timeout_s)),
-                )
-
-            traj_req = TrajectoryRequest(
-                scenario=None,
-                path=None,
-                config=req_cfg,
-            )
-            traj_result = optimizer.optimize(traj_req)
-        except Exception as exc:
-            response.success = False
-            response.message = f"Trajectory optimization failed: {exc}"
-            self._publish_backend_status("UNAVAILABLE", response.message)
-            return response
-
-        trajectory = self._trajectory_result_to_joint_trajectory(traj_result)
-        trajectory_id = make_trajectory_id()
-        stored = StoredTrajectory(
-            trajectory_id=trajectory_id,
-            trajectory=trajectory,
-            success=bool(traj_result.success),
-            message=traj_result.message,
-            method=optimizer_kind,
-            geometric_plan_id=geometric_plan_id,
-        )
-        self._trajectories[trajectory_id] = stored
-
-        response.success = stored.success
-        response.trajectory_id = trajectory_id
-        response.trajectory = trajectory
+        response.success = False
         response.message = (
-            f"Trajectory computed using {optimizer_kind}. "
-            f"{stored.message}"
+            "Unsupported trajectory method for online concrete backend: "
+            f"'{method_upper}'. Use TOPPRA_PATH_FOLLOWING or FIXED_TIME_INTERPOLATION."
         )
-        self._publish_backend_status("AVAILABLE", response.message)
+        self._publish_backend_status("UNAVAILABLE", response.message)
         return response
 
     def _handle_execute_trajectory(
@@ -340,6 +353,23 @@ class ServiceHandlersMixin:
         if request.dry_run:
             response.success = True
             response.message = f"Dry-run accepted for '{request.trajectory_id}'."
+            return response
+
+        if (
+            self._planner_backend.backend_name == "concrete"
+            and (
+                "JOINT_LINEAR_INTERPOLATION" in str(stored.message)
+                or "joint_space_stage_fallback=legacy_path_ik" in str(stored.message)
+                or "TOPP-RA path fallback via JOINT_GOAL_LINEARIZATION" in str(stored.message)
+            )
+        ):
+            response.success = False
+            response.message = (
+                "Refusing to execute concrete fallback trajectory "
+                f"'{request.trajectory_id}': planner produced a fallback-only concrete path "
+                "(legacy path IK or joint linearization), which is acceptable for plan "
+                "inspection but not for live execution."
+            )
             return response
 
         response.success, response.message = self._execution_adapter.dispatch_trajectory(

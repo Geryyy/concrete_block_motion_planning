@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -9,6 +11,30 @@ import yaml
 
 
 _DEFAULT_YAML = Path(__file__).resolve().parents[1] / "crane_config.yaml"
+
+
+def _resolve_existing_urdf_path(initial_path: str) -> str:
+    p = Path(initial_path).expanduser()
+    if p.exists():
+        return str(p.resolve())
+
+    here = Path(__file__).resolve()
+    for parent in [Path.cwd(), here.parent, *here.parents]:
+        cand = parent / "crane_urdf" / "crane.urdf"
+        if cand.exists():
+            return str(cand.resolve())
+        xacro_cand = parent / "src" / "epsilon_crane_description" / "urdf" / "crane.urdf.xacro"
+        if xacro_cand.exists():
+            urdf_path = Path(tempfile.gettempdir()) / "analytic_model_config_crane.urdf"
+            proc = subprocess.run(
+                ["xacro", str(xacro_cand)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            urdf_path.write_text(proc.stdout, encoding="utf-8")
+            return str(urdf_path.resolve())
+    return str(p)
 
 
 @dataclass
@@ -46,7 +72,7 @@ class AnalyticModelConfig:
             data = yaml.safe_load(fh)
 
         urdf_raw = data.get("urdf_path", "")
-        urdf_resolved = str((path.parent / urdf_raw).resolve())
+        urdf_resolved = _resolve_existing_urdf_path(str((path.parent / urdf_raw).resolve()))
         joint_position_overrides: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
         raw_overrides = data.get("joint_position_overrides", {})
         if isinstance(raw_overrides, dict):

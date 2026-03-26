@@ -6,7 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import yaml
@@ -21,6 +21,55 @@ from .types import StoredGeometricPlan, StoredTrajectory, WallPlanTask
 
 
 class RuntimeHelpersMixin:
+    def _canonical_online_joint_names(self) -> list[str]:
+        if self._analytic_cfg is None:
+            return list(self._reduced_joint_names)
+        return [str(name) for name in self._analytic_cfg.actuated_joints]
+
+    @staticmethod
+    def _format_named_joint_vector(names: Sequence[str], values: Sequence[float]) -> str:
+        pairs = []
+        for name, value in zip(names, values):
+            pairs.append(f"{name}={float(value):.3f}")
+        return "[" + ", ".join(pairs) + "]"
+
+    def _fk_nav_path_from_joint_trajectory(
+        self,
+        trajectory: JointTrajectory,
+        *,
+        frame_id: str = "world",
+    ) -> NavPath:
+        nav_path = NavPath()
+        nav_path.header.frame_id = frame_id
+        if not trajectory.points:
+            return nav_path
+
+        planner = self._get_joint_space_planner()
+        if planner is None:
+            return nav_path
+
+        joint_names = [str(name) for name in trajectory.joint_names]
+        canonical_names = self._canonical_online_joint_names()
+        if not joint_names or not canonical_names:
+            return nav_path
+
+        for point in trajectory.points:
+            joint_map = {
+                name: float(point.positions[idx])
+                for idx, name in enumerate(joint_names)
+                if idx < len(point.positions)
+            }
+            q = self._canonical_q_from_joint_map(joint_map)
+            xyz, yaw, _ = planner.fk_world_pose(q)
+            pose = PoseStamped()
+            pose.header.frame_id = frame_id
+            pose.pose.position.x = float(xyz[0])
+            pose.pose.position.y = float(xyz[1])
+            pose.pose.position.z = float(xyz[2])
+            pose.pose.orientation = self._yaw_to_quaternion(float(yaw))
+            nav_path.poses.append(pose)
+        return nav_path
+
     def _build_geometric_plan(
         self,
         start_pose: PoseStamped,
@@ -99,9 +148,10 @@ class RuntimeHelpersMixin:
 
         scenario_scene = self._planner_scene
         world_model_note = ""
+        scene_objects = list(planning_context.get("planning_scene_objects", []))
         world_blocks = list(planning_context.get("world_model_blocks", []))
-        if world_blocks:
-            built_scene, world_model_note = self._scene_from_world_blocks(world_blocks)
+        if scene_objects:
+            built_scene, world_model_note = self._scene_from_planning_scene_objects(scene_objects)
             if built_scene is not None:
                 scenario_scene = built_scene
             elif world_model_note:
@@ -187,9 +237,9 @@ class RuntimeHelpersMixin:
             planner_path=geo_result.path,
         )
 
-    def _scene_from_world_blocks(
+    def _scene_from_planning_scene_objects(
         self,
-        world_blocks: List[Dict[str, Any]],
+        scene_objects: List[Dict[str, Any]],
     ) -> Tuple[Optional[Any], str]:
         try:
             from motion_planning import Scene
@@ -198,7 +248,7 @@ class RuntimeHelpersMixin:
 
         scene = Scene()
         added = 0
-        for item in world_blocks:
+        for item in scene_objects:
             pose = item.get("pose")
             if pose is None:
                 continue
@@ -216,7 +266,7 @@ class RuntimeHelpersMixin:
                 )
                 oid = str(item.get("id", "")).strip() or None
                 scene.add_block(
-                    size=self._moving_block_size,
+                    size=item.get("dimensions", self._moving_block_size),
                     position=position,
                     quat=quat,
                     object_id=oid,
@@ -225,8 +275,8 @@ class RuntimeHelpersMixin:
             except Exception:
                 continue
         if added <= 0:
-            return None, "world model returned no valid blocks"
-        return scene, f"world_model_blocks_used={added}"
+            return None, "world model returned no valid planning-scene objects"
+        return scene, f"world_model_objects_used={added}"
 
     def _resolve_goal_approach_normals(
         self,
@@ -366,6 +416,453 @@ class RuntimeHelpersMixin:
         self._trajectory_optimizers[profile] = optimizer
         return optimizer, method_norm
 
+    def _trajectory_joint_names(self) -> list[str]:
+        configured = [jn for jn in self._default_named_joint_names if jn in self._reduced_joint_names]
+        return configured or list(self._reduced_joint_names)
+
+    def _project_q_to_trajectory_joints(
+        self,
+        q_values: np.ndarray,
+        joint_names: list[str],
+    ) -> np.ndarray:
+        q_arr = np.asarray(q_values, dtype=float)
+        if q_arr.ndim == 1:
+            q_arr = q_arr.reshape(1, -1)
+        indices = [self._reduced_joint_names.index(jn) for jn in joint_names]
+        return q_arr[:, indices]
+
+    def _reduced_q_from_joint_map(self, q_map: dict[str, float]) -> np.ndarray:
+        q_red = np.zeros(len(self._reduced_joint_names), dtype=float)
+        for i, name in enumerate(self._reduced_joint_names):
+            q_red[i] = float(q_map.get(name, 0.0))
+        return q_red
+
+    def _canonical_q_from_joint_map(self, q_map: Mapping[str, float]) -> np.ndarray:
+        names = self._canonical_online_joint_names()
+        q = np.zeros(len(names), dtype=float)
+        for i, name in enumerate(names):
+            q[i] = float(q_map.get(name, 0.0))
+        return q
+
+    def _complete_dynamic_state_from_actuated(
+        self,
+        q_map: Mapping[str, float],
+        *,
+        q_seed: Mapping[str, float] | None = None,
+    ) -> dict[str, float]:
+        if self._steady_state_solver is None or self._analytic_cfg is None:
+            return {str(k): float(v) for k, v in q_map.items()}
+
+        act_map = {
+            str(name): float(q_map.get(name, 0.0)) for name in self._analytic_cfg.actuated_joints
+        }
+        completed = self._steady_state_solver.complete_from_actuated(
+            act_map,
+            q_seed=q_seed,
+        )
+        if completed.success:
+            out = dict(completed.q_dynamic)
+        else:
+            out = dict(act_map)
+        for follower, leader in self._analytic_cfg.tied_joints.items():
+            if leader in out:
+                out[follower] = float(out[leader])
+        return out
+
+    def _joint_goal_linearization_fallback(
+        self,
+        *,
+        q_start: np.ndarray,
+        goal_probe,
+        method: str,
+        geometric_plan_id: str,
+        path: NavPath,
+        probe_goal_summary: str,
+        reason: str,
+    ) -> StoredTrajectory | None:
+        if goal_probe is None or not goal_probe.success:
+            return None
+        q_goal_probe = self._reduced_q_from_joint_map(goal_probe.q_dynamic)
+        fallback = self._build_fixed_time_interpolation_trajectory(
+            q_start=np.asarray(q_start, dtype=float),
+            q_goal=np.asarray(q_goal_probe, dtype=float),
+            duration_s=self._traj_fixed_duration_s,
+            num_points=self._traj_fixed_num_points,
+            method=method,
+            geometric_plan_id=geometric_plan_id,
+            path=path,
+        )
+        fallback.message = (
+            f"{fallback.message} | TOPP-RA path fallback via JOINT_GOAL_LINEARIZATION"
+            f"{probe_goal_summary} | fallback_reason={reason}"
+        )
+        return fallback
+
+    def _get_joint_goal_stage(self):
+        if getattr(self, "_joint_goal_stage", None) is not None:
+            return self._joint_goal_stage
+        try:
+            from motion_planning.pipeline import JointGoalStage
+
+            self._joint_goal_stage = JointGoalStage()
+        except Exception as exc:
+            self.get_logger().warn(f"Failed to initialize JointGoalStage: {exc}")
+            self._joint_goal_stage = None
+        return self._joint_goal_stage
+
+    def _get_joint_space_planner(self):
+        if getattr(self, "_joint_space_planner", None) is not None:
+            return self._joint_space_planner
+        try:
+            from motion_planning.pipeline import JointSpaceCartesianPlanner
+            from motion_planning.trajectory.planning_limits import load_planning_limits_yaml
+            import inspect
+
+            position_limits, _ = load_planning_limits_yaml(
+                Path(self._traj_joint_position_limits_file)
+            )
+            self.get_logger().info(
+                "JointSpaceCartesianPlanner import"
+                f" | module={inspect.getsourcefile(JointSpaceCartesianPlanner) or '<unknown>'}"
+            )
+            try:
+                plan_src = inspect.getsource(JointSpaceCartesianPlanner.plan)
+                self.get_logger().info(
+                    "JointSpaceCartesianPlanner plan source"
+                    f" | anchor_v1={'ANCHOR_V1' in plan_src}"
+                    f" | anchor_count_key={'anchor_count' in plan_src}"
+                    f" | projected_waypoints_key={'projected_waypoints' in plan_src}"
+                )
+            except Exception as exc:
+                self.get_logger().warn(f"Failed to inspect JointSpaceCartesianPlanner.plan: {exc}")
+            self._joint_space_planner = JointSpaceCartesianPlanner(
+                urdf_path=self._analytic_cfg.urdf_path,
+                target_frame=self._analytic_cfg.target_frame,
+                reduced_joint_names=self._canonical_online_joint_names(),
+                joint_position_limits=position_limits,
+            )
+        except Exception as exc:
+            self.get_logger().warn(f"Failed to initialize JointSpaceCartesianPlanner: {exc}")
+            self._joint_space_planner = None
+        return self._joint_space_planner
+
+    def _parameterize_joint_waypoints_with_toppra(
+        self,
+        *,
+        q_waypoints: np.ndarray,
+        joint_names: list[str],
+        geometric_plan_id: str,
+        method: str,
+        base_message: str,
+        path: NavPath,
+    ) -> StoredTrajectory:
+        from motion_planning.trajectory.limits import load_joint_accel_limits_yaml
+        from motion_planning.trajectory.planning_limits import load_planning_limits_yaml
+        import toppra as ta
+        import toppra.algorithm as algo
+        import toppra.constraint as constraint
+
+        q_waypoints = np.asarray(q_waypoints, dtype=float)
+        if q_waypoints.ndim != 2 or q_waypoints.shape[0] < 2:
+            raise ValueError("TOPP-RA requires at least two joint waypoints.")
+
+        position_limits, _ = load_planning_limits_yaml(Path(self._traj_joint_position_limits_file))
+        for idx, name in enumerate(joint_names):
+            lo, hi = position_limits.get(name, (None, None))
+            if lo is not None and np.min(q_waypoints[:, idx]) < float(lo) - 1e-6:
+                bad_idx = int(np.argmin(q_waypoints[:, idx]))
+                raise ValueError(
+                    "TOPP-RA waypoint path violates min position limit for "
+                    f"'{name}' (path_min={np.min(q_waypoints[:, idx]):.4f}, limit={float(lo):.4f}, "
+                    f"waypoint_index={bad_idx})"
+                )
+            if hi is not None and np.max(q_waypoints[:, idx]) > float(hi) + 1e-6:
+                bad_idx = int(np.argmax(q_waypoints[:, idx]))
+                raise ValueError(
+                    "TOPP-RA waypoint path violates max position limit for "
+                    f"'{name}' (path_max={np.max(q_waypoints[:, idx]):.4f}, limit={float(hi):.4f}, "
+                    f"waypoint_index={bad_idx})"
+                )
+
+        _, default_acc = load_joint_accel_limits_yaml(Path(self._traj_joint_accel_limits_file))
+        accel_yaml, _ = load_joint_accel_limits_yaml(Path(self._traj_joint_accel_limits_file))
+        velocity_limits = []
+        acceleration_limits = []
+        for name in joint_names:
+            vlim = abs(float(self._reduced_joint_velocity_limits.get(name, 0.0)))
+            if vlim <= 1e-6:
+                raise ValueError(f"Missing reduced velocity limit for joint '{name}'.")
+            velocity_limits.append(vlim)
+            lo_acc, hi_acc = accel_yaml.get(name, default_acc)
+            acceleration_limits.append(max(abs(float(lo_acc)), abs(float(hi_acc))))
+
+        ss = np.linspace(0.0, 1.0, q_waypoints.shape[0], dtype=float)
+        path_interp = ta.SplineInterpolator(ss, q_waypoints)
+        gridpoint_count = max(self._traj_toppra_gridpoints, q_waypoints.shape[0])
+        gridpoints = np.linspace(0.0, 1.0, gridpoint_count, dtype=float)
+        toppra_constraints = [
+            constraint.JointVelocityConstraint(np.asarray(velocity_limits, dtype=float)),
+            constraint.JointAccelerationConstraint(np.asarray(acceleration_limits, dtype=float)),
+        ]
+        parametrizer = algo.TOPPRA(
+            toppra_constraints,
+            path_interp,
+            gridpoints=gridpoints,
+            parametrizer="ParametrizeSpline",
+        )
+        traj = parametrizer.compute_trajectory(0.0, 0.0)
+        if traj is None:
+            raise ValueError("TOPP-RA failed to compute a time-parameterized trajectory.")
+
+        duration_s = float(getattr(traj, "duration", 0.0))
+        if duration_s <= 0.0:
+            raise ValueError("TOPP-RA produced a non-positive trajectory duration.")
+
+        sample_count = max(self._traj_fixed_num_points, q_waypoints.shape[0], 20)
+        time_s = np.linspace(0.0, duration_s, sample_count, dtype=float)
+        q_traj = np.asarray([traj(t) for t in time_s], dtype=float)
+        dq_traj = np.asarray([traj(t, 1) for t in time_s], dtype=float)
+        if q_traj.shape != dq_traj.shape:
+            raise ValueError("TOPP-RA returned inconsistent position/velocity samples.")
+
+        path_len = 0.0
+        try:
+            pts = np.asarray(
+                [[p.pose.position.x, p.pose.position.y, p.pose.position.z] for p in path.poses],
+                dtype=float,
+            )
+            if pts.shape[0] > 1:
+                path_len = float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum())
+        except Exception:
+            path_len = 0.0
+
+        traj_result = SimpleNamespace(
+            success=True,
+            message=f"{base_message} ({sample_count} points, {duration_s:.2f}s).",
+            state=q_traj,
+            time_s=time_s,
+            diagnostics={
+                "q_trajectory": q_traj,
+                "dq_trajectory": dq_traj,
+                "reduced_joint_names": joint_names,
+                "fallback_mode": "TOPPRA_JOINT_SPACE",
+                "duration_s": duration_s,
+                "num_points": sample_count,
+                "path_length_m": path_len,
+            },
+        )
+        trajectory = self._trajectory_result_to_joint_trajectory(traj_result)
+        cartesian_path = self._fk_nav_path_from_joint_trajectory(trajectory)
+        trajectory_id = make_trajectory_id()
+        return StoredTrajectory(
+            trajectory_id=trajectory_id,
+            trajectory=trajectory,
+            success=True,
+            message=traj_result.message,
+            method=method,
+            geometric_plan_id=geometric_plan_id,
+            cartesian_path=cartesian_path,
+        )
+
+    def _solve_canonical_q_from_pose(
+        self,
+        pose: PoseStamped,
+    ) -> Tuple[bool, np.ndarray, str]:
+        joint_goal_stage = self._get_joint_goal_stage()
+        if joint_goal_stage is None:
+            return False, np.zeros(0, dtype=float), "joint goal stage is unavailable"
+
+        goal_pose = pose.pose
+        try:
+            yaw = self._quaternion_to_yaw(goal_pose.orientation)
+            result = joint_goal_stage.solve_world_pose(
+                goal_world=(
+                    float(goal_pose.position.x),
+                    float(goal_pose.position.y),
+                    float(goal_pose.position.z),
+                ),
+                target_yaw_rad=float(yaw),
+                q_seed=dict(self._ik_seed_map),
+            )
+        except Exception as exc:
+            return False, np.zeros(0, dtype=float), str(exc)
+
+        if not result.success:
+            return False, np.zeros(0, dtype=float), result.message
+
+        for name, value in result.q_dynamic.items():
+            if name in self._ik_seed_map:
+                self._ik_seed_map[name] = float(value)
+
+        return True, self._canonical_q_from_joint_map(result.q_actuated), result.message
+
+    def _build_joint_space_cartesian_trajectory(
+        self,
+        *,
+        path: NavPath,
+        geometric_plan_id: str,
+        method: str,
+        q_start: np.ndarray,
+        q_goal: np.ndarray,
+    ) -> StoredTrajectory:
+        planner = self._get_joint_space_planner()
+        if planner is None:
+            raise ValueError("joint-space planner unavailable")
+
+        ref_xyz, ref_yaw = self._extract_control_points(path)
+        plan_result = planner.plan(
+            q_start=np.asarray(q_start, dtype=float),
+            q_goal=np.asarray(q_goal, dtype=float),
+            reference_xyz=ref_xyz,
+            reference_yaw=ref_yaw,
+        )
+        if not plan_result.success:
+            raise ValueError(plan_result.message)
+
+        diagnostics_text = ", ".join(
+            [
+                f"{key}={float(val):.4f}"
+                for key, val in plan_result.diagnostics.items()
+                if np.isscalar(val)
+            ]
+        )
+        base_message = "Generated TOPP-RA joint-space Cartesian-cost trajectory"
+        if diagnostics_text:
+            base_message = f"{base_message} | {plan_result.message} | {diagnostics_text}"
+        else:
+            base_message = f"{base_message} | {plan_result.message}"
+
+        return self._parameterize_joint_waypoints_with_toppra(
+            q_waypoints=plan_result.q_waypoints,
+            joint_names=self._canonical_online_joint_names(),
+            geometric_plan_id=geometric_plan_id,
+            method=method,
+            base_message=base_message,
+            path=path,
+        )
+
+    def _build_toppra_path_following_trajectory(
+        self,
+        *,
+        path: NavPath,
+        geometric_plan_id: str,
+        method: str,
+    ) -> StoredTrajectory:
+        from motion_planning.trajectory.limits import load_joint_accel_limits_yaml
+        from motion_planning.trajectory.planning_limits import load_planning_limits_yaml
+        import toppra as ta
+        import toppra.algorithm as algo
+        import toppra.constraint as constraint
+
+        if not path.poses or len(path.poses) < 2:
+          raise ValueError("TOPP-RA path following requires at least two path poses.")
+
+        goal_probe = None
+        probe_goal_summary = ""
+        q_waypoints_full: list[np.ndarray] = []
+        path_ik_failure = None
+        for pose in path.poses:
+            ok, q_pose, msg = self._solve_reduced_q_from_pose(pose)
+            if not ok:
+                path_ik_failure = str(msg)
+                break
+            q_waypoints_full.append(np.asarray(q_pose, dtype=float))
+
+        joint_names = self._trajectory_joint_names()
+        try:
+            joint_goal_stage = self._get_joint_goal_stage()
+            if joint_goal_stage is not None:
+                goal_pose = path.poses[-1].pose
+                goal_yaw = self._quaternion_to_yaw(goal_pose.orientation)
+                goal_probe = joint_goal_stage.solve_world_pose(
+                    goal_world=(
+                        float(goal_pose.position.x),
+                        float(goal_pose.position.y),
+                        float(goal_pose.position.z),
+                    ),
+                    target_yaw_rad=float(goal_yaw),
+                )
+                if goal_probe.success:
+                    probe_goal_summary = (
+                        " | joint_goal_probe: success "
+                        f"q4={float(goal_probe.q_dynamic.get('q4_big_telescope', float('nan'))):.4f}"
+                    )
+                else:
+                    probe_goal_summary = f" | joint_goal_probe: failure ({goal_probe.message})"
+        except Exception as exc:
+            probe_goal_summary = f" | joint_goal_probe: error ({exc})"
+
+        if path_ik_failure is not None:
+            if q_waypoints_full:
+                fallback = self._joint_goal_linearization_fallback(
+                    q_start=np.asarray(q_waypoints_full[0], dtype=float),
+                    goal_probe=goal_probe,
+                    method=method,
+                    geometric_plan_id=geometric_plan_id,
+                    path=path,
+                    probe_goal_summary=probe_goal_summary,
+                    reason=f"ik_failed_along_path:{path_ik_failure}",
+                )
+                if fallback is not None:
+                    return fallback
+            else:
+                raise ValueError(f"IK failed along path: {path_ik_failure}{probe_goal_summary}")
+
+        q_waypoints = self._project_q_to_trajectory_joints(np.vstack(q_waypoints_full), joint_names)
+
+        position_limits, _ = load_planning_limits_yaml(Path(self._traj_joint_position_limits_file))
+        for idx, name in enumerate(joint_names):
+            lo, hi = position_limits.get(name, (None, None))
+            if lo is not None and np.min(q_waypoints[:, idx]) < float(lo) - 1e-6:
+                fallback = self._joint_goal_linearization_fallback(
+                    q_start=np.asarray(q_waypoints_full[0], dtype=float),
+                    goal_probe=goal_probe,
+                    method=method,
+                    geometric_plan_id=geometric_plan_id,
+                    path=path,
+                    probe_goal_summary=probe_goal_summary,
+                    reason=(
+                        f"min_limit:{name}:"
+                        f"{np.min(q_waypoints[:, idx]):.4f}<{float(lo):.4f}"
+                    ),
+                )
+                if fallback is not None:
+                    return fallback
+                raise ValueError(
+                    "TOPP-RA waypoint path violates min position limit for "
+                    f"'{name}' (path_min={np.min(q_waypoints[:, idx]):.4f}, limit={float(lo):.4f})"
+                    f"{probe_goal_summary}."
+                )
+            if hi is not None and np.max(q_waypoints[:, idx]) > float(hi) + 1e-6:
+                fallback = self._joint_goal_linearization_fallback(
+                    q_start=np.asarray(q_waypoints_full[0], dtype=float),
+                    goal_probe=goal_probe,
+                    method=method,
+                    geometric_plan_id=geometric_plan_id,
+                    path=path,
+                    probe_goal_summary=probe_goal_summary,
+                    reason=(
+                        f"max_limit:{name}:"
+                        f"{np.max(q_waypoints[:, idx]):.4f}>{float(hi):.4f}"
+                    ),
+                )
+                if fallback is not None:
+                    return fallback
+                raise ValueError(
+                    "TOPP-RA waypoint path violates max position limit for "
+                    f"'{name}' (path_max={np.max(q_waypoints[:, idx]):.4f}, limit={float(hi):.4f})"
+                    f"{probe_goal_summary}."
+                )
+
+        return self._parameterize_joint_waypoints_with_toppra(
+            q_waypoints=q_waypoints,
+            joint_names=joint_names,
+            geometric_plan_id=geometric_plan_id,
+            method=method,
+            base_message="Generated TOPP-RA path-following joint trajectory",
+            path=path,
+        )
+
     def _build_fixed_time_interpolation_trajectory(
         self,
         q_start: np.ndarray,
@@ -379,14 +876,41 @@ class RuntimeHelpersMixin:
         duration_s = max(0.1, float(duration_s))
         num_points = max(2, int(num_points))
 
-        alpha = np.linspace(0.0, 1.0, num_points, dtype=float).reshape(-1, 1)
-        q_traj = (1.0 - alpha) * q_start.reshape(1, -1) + alpha * q_goal.reshape(1, -1)
-        dq_const = (q_goal - q_start) / duration_s
-        dq_traj = np.repeat(dq_const.reshape(1, -1), num_points, axis=0)
-        dq_traj[0, :] = 0.0
-        dq_traj[-1, :] = 0.0
+        fallback_mode = "JOINT_LINEAR_INTERPOLATION"
+        ik_waypoints: list[np.ndarray] = []
+        if path.poses:
+            for pose in path.poses:
+                ok, q_pose, _ = self._solve_reduced_q_from_pose(pose)
+                if not ok:
+                    ik_waypoints = []
+                    break
+                ik_waypoints.append(np.asarray(q_pose, dtype=float).reshape(1, -1))
+
+        if len(ik_waypoints) >= 2:
+            q_waypoints = np.vstack(ik_waypoints)
+            waypoint_param = np.linspace(0.0, 1.0, q_waypoints.shape[0], dtype=float)
+            sample_param = np.linspace(0.0, 1.0, num_points, dtype=float)
+            q_traj = np.column_stack(
+                [
+                    np.interp(sample_param, waypoint_param, q_waypoints[:, i])
+                    for i in range(q_waypoints.shape[1])
+                ]
+            )
+            fallback_mode = "PATH_IK_INTERPOLATION"
+        else:
+            alpha = np.linspace(0.0, 1.0, num_points, dtype=float).reshape(-1, 1)
+            q_traj = (1.0 - alpha) * q_start.reshape(1, -1) + alpha * q_goal.reshape(1, -1)
 
         time_s = np.linspace(0.0, duration_s, num_points, dtype=float)
+        dq_traj = np.zeros_like(q_traj)
+        if num_points >= 2:
+            dt = float(time_s[1] - time_s[0]) if num_points > 1 else duration_s
+            if dt <= 0.0:
+                dt = duration_s / max(1, num_points - 1)
+            dq_traj[1:-1, :] = (q_traj[2:, :] - q_traj[:-2, :]) / (2.0 * dt)
+            dq_traj[0, :] = (q_traj[1, :] - q_traj[0, :]) / dt
+            dq_traj[-1, :] = (q_traj[-1, :] - q_traj[-2, :]) / dt
+
         q_delta = q_goal - q_start
         path_len = 0.0
         try:
@@ -407,7 +931,8 @@ class RuntimeHelpersMixin:
             success=True,
             message=(
                 "Generated fixed-time interpolated joint trajectory "
-                f"({num_points} points, {duration_s:.2f}s) without acados."
+                f"({num_points} points, {duration_s:.2f}s) without acados "
+                f"using {fallback_mode}."
             ),
             state=q_traj,
             time_s=time_s,
@@ -415,7 +940,7 @@ class RuntimeHelpersMixin:
                 "q_trajectory": q_traj,
                 "dq_trajectory": dq_traj,
                 "reduced_joint_names": list(self._reduced_joint_names),
-                "fallback_mode": "FIXED_TIME_INTERPOLATION",
+                "fallback_mode": fallback_mode,
                 "duration_s": duration_s,
                 "num_points": num_points,
                 "joint_delta_norm": float(np.linalg.norm(q_delta)),
@@ -424,6 +949,7 @@ class RuntimeHelpersMixin:
         )
 
         trajectory = self._trajectory_result_to_joint_trajectory(traj_result)
+        cartesian_path = self._fk_nav_path_from_joint_trajectory(trajectory)
         trajectory_id = make_trajectory_id()
         return StoredTrajectory(
             trajectory_id=trajectory_id,
@@ -432,6 +958,7 @@ class RuntimeHelpersMixin:
             message=traj_result.message,
             method=method,
             geometric_plan_id=geometric_plan_id,
+            cartesian_path=cartesian_path,
         )
 
     def _trajectory_result_to_joint_trajectory(
@@ -625,6 +1152,11 @@ class RuntimeHelpersMixin:
             self._reduced_joint_names = [
                 str(reduced_model.names[jid]) for jid in range(1, reduced_model.njoints)
             ]
+            self._reduced_joint_velocity_limits = {
+                str(reduced_model.names[jid]): float(reduced_model.velocityLimit[int(reduced_model.joints[jid].idx_v)])
+                for jid in range(1, reduced_model.njoints)
+                if int(reduced_model.joints[jid].nv) == 1
+            }
 
             self._ik_seed_map = {jn: 0.0 for jn in self._analytic_cfg.dynamic_joints}
             self._planner_scene = None
@@ -1121,41 +1653,20 @@ class RuntimeHelpersMixin:
     def _check_trajectory_runtime() -> Tuple[bool, str]:
         missing: List[str] = []
 
-        for module in ("acados_template", "casadi"):
+        try:
+            import pinocchio  # noqa: F401
+        except Exception:
+            missing.append("pinocchio")
+
+        for module in ("toppra", "scipy"):
             try:
                 __import__(module)
             except Exception:
                 missing.append(module)
 
-        try:
-            import pinocchio  # noqa: F401
-        except Exception:
-            missing.append("pinocchio")
-        else:
-            try:
-                from pinocchio import casadi as _pinocchio_casadi  # noqa: F401
-            except Exception:
-                missing.append("pinocchio.casadi")
-
         if missing:
             return False, f"missing modules: {', '.join(missing)}"
-        acados_source = os.environ.get("ACADOS_SOURCE_DIR", "").strip()
-        if not acados_source:
-            return (
-                True,
-                "trajectory runtime modules are available "
-                "(ACADOS_SOURCE_DIR is not set; ensure the devcontainer environment is loaded if codegen fails)",
-            )
-        acados_path = Path(acados_source).expanduser()
-        if not acados_path.exists():
-            return (
-                True,
-                f"trajectory modules ok, but ACADOS_SOURCE_DIR '{acados_path}' does not exist",
-            )
-        return (
-            True,
-            f"trajectory runtime modules are available (ACADOS_SOURCE_DIR={acados_path})",
-        )
+        return True, "trajectory runtime modules are available (pinocchio, scipy, toppra)"
 
     def _publish_backend_status(self, state: str, detail: str) -> None:
         msg = String()

@@ -57,6 +57,14 @@ class SteadyStateResult:
         The full :class:`~.inverse_kinematics.IkSolveResult` for inspection.
     passive_residual:
         ``||g_p(q)||`` at the equilibrium solution (should be ~1e-11).
+    fk_position_error_m:
+        Final TCP position error of the returned state against the requested target.
+    fk_yaw_error_rad:
+        Final TCP yaw error of the returned state against the requested target.
+    fk_xyz:
+        Final TCP position of the returned state in the configured base frame.
+    fk_yaw_rad:
+        Final TCP yaw of the returned state in the configured base frame.
     """
 
     success: bool
@@ -66,6 +74,10 @@ class SteadyStateResult:
     q_dynamic: Dict[str, float]
     ik_result: IkSolveResult
     passive_residual: float
+    fk_position_error_m: float
+    fk_yaw_error_rad: float
+    fk_xyz: np.ndarray
+    fk_yaw_rad: float
 
 
 # ------------------------------------------------------------------ #
@@ -102,9 +114,11 @@ class CraneSteadyState:
         desc: ModelDescription,
         config: AnalyticModelConfig,
         *,
-        ik_max_nfev: int = 200,
+        ik_max_nfev: int = 1000,
         passive_tol: float = 1e-10,
         passive_residual_tol: float = 1e-6,
+        fk_position_tol_m: float = 2e-2,
+        fk_yaw_tol_rad: float = 5e-2,
         passive_max_iter: int = 200,
         base_frame: str = _DEFAULT_BASE,
         end_frame: str = _DEFAULT_END,
@@ -115,6 +129,8 @@ class CraneSteadyState:
         self._end_frame = end_frame
         self._passive_tol = passive_tol
         self._passive_residual_tol = passive_residual_tol
+        self._fk_position_tol_m = float(fk_position_tol_m)
+        self._fk_yaw_tol_rad = float(fk_yaw_tol_rad)
         self._passive_max_iter = passive_max_iter
         self._ik = AnalyticInverseKinematics(desc, config)
         self._ik_max_nfev = ik_max_nfev
@@ -155,9 +171,11 @@ class CraneSteadyState:
     def default(
         cls,
         *,
-        ik_max_nfev: int = 200,
+        ik_max_nfev: int = 1000,
         passive_tol: float = 1e-10,
         passive_residual_tol: float = 1e-6,
+        fk_position_tol_m: float = 2e-2,
+        fk_yaw_tol_rad: float = 5e-2,
         passive_max_iter: int = 200,
     ) -> "CraneSteadyState":
         """Construct using the bundled crane config (``crane_config.yaml``)."""
@@ -169,6 +187,8 @@ class CraneSteadyState:
             ik_max_nfev=ik_max_nfev,
             passive_tol=passive_tol,
             passive_residual_tol=passive_residual_tol,
+            fk_position_tol_m=fk_position_tol_m,
+            fk_yaw_tol_rad=fk_yaw_tol_rad,
             passive_max_iter=passive_max_iter,
         )
 
@@ -209,44 +229,97 @@ class CraneSteadyState:
 
         T_target = _pose_from_pos_yaw(p, float(target_yaw))
 
-        ik_res = self._ik.solve_pose(
-            target_T_base_to_end=T_target,
-            base_frame=self._base_frame,
-            end_frame=self._end_frame,
-            q_seed=q_seed,
-            max_nfev=self._ik_max_nfev,
-        )
+        q_seed_map = dict(q_seed or {})
+        q_p_eq = {jn: float(q_seed_map.get(jn, self._pas_q0[i])) for i, jn in enumerate(self._pas_names)}
+        residual = float("inf")
+        ik_res = None
+        converged = False
+        max_passive_ik_iters = 12
+        passive_delta_tol = 1e-5
 
-        if not ik_res.success:
-            return SteadyStateResult(
-                success=False,
-                message=f"IK failed: {ik_res.message}",
-                q_actuated=ik_res.q_actuated,
-                q_passive={jn: 0.0 for jn in self._pas_names},
+        for _ in range(max_passive_ik_iters):
+            ik_res = self._ik.solve_pose(
+                target_T_base_to_end=T_target,
+                base_frame=self._base_frame,
+                end_frame=self._end_frame,
+                q_seed=q_seed_map,
+                fixed_joints=q_p_eq,
+                max_nfev=self._ik_max_nfev,
+            )
+
+            if not ik_res.success:
+                return SteadyStateResult(
+                    success=False,
+                    message=f"IK failed: {ik_res.message}",
+                    q_actuated=ik_res.q_actuated,
+                    q_passive=q_p_eq,
                 q_dynamic=ik_res.q_dynamic,
                 ik_result=ik_res,
                 passive_residual=float("inf"),
+                fk_position_error_m=float("inf"),
+                fk_yaw_error_rad=float("inf"),
+                fk_xyz=np.zeros(3, dtype=float),
+                fk_yaw_rad=float("nan"),
             )
 
-        # Build full q map from the IK solution (includes passive at seed/0).
-        q_full_map: dict[str, float] = dict(ik_res.q_dynamic)
-        for follower, leader in self._cfg.tied_joints.items():
-            if leader in q_full_map:
-                q_full_map[follower] = q_full_map[leader]
+            q_full_map = dict(ik_res.q_dynamic)
+            for follower, leader in self._cfg.tied_joints.items():
+                if leader in q_full_map:
+                    q_full_map[follower] = q_full_map[leader]
 
-        q_p_eq, residual, passive_ok, passive_msg = self._passive_equilibrium(q_full_map, q_seed)
-        if not passive_ok:
+            q_p_next, residual, passive_ok, passive_msg = self._passive_equilibrium(q_full_map, q_seed_map)
+            if not passive_ok:
+                return SteadyStateResult(
+                    success=False,
+                    message=f"Passive equilibrium failed: {passive_msg} (residual={residual:.3e})",
+                    q_actuated=ik_res.q_actuated,
+                    q_passive=q_p_next,
+                    q_dynamic=ik_res.q_dynamic,
+                    ik_result=ik_res,
+                    passive_residual=residual,
+                    fk_position_error_m=float("inf"),
+                    fk_yaw_error_rad=float("inf"),
+                    fk_xyz=np.zeros(3, dtype=float),
+                    fk_yaw_rad=float("nan"),
+                )
+
+            delta = 0.0
+            if q_p_eq:
+                delta = max(abs(float(q_p_next.get(jn, 0.0)) - float(q_p_eq.get(jn, 0.0))) for jn in self._pas_names)
+            q_p_eq = q_p_next
+            q_seed_map.update(ik_res.q_dynamic)
+            q_seed_map.update(q_p_eq)
+            if delta <= passive_delta_tol:
+                converged = True
+                break
+
+        if ik_res is None:
             return SteadyStateResult(
                 success=False,
-                message=f"Passive equilibrium failed: {passive_msg} (residual={residual:.3e})",
-                q_actuated=ik_res.q_actuated,
-                q_passive=q_p_eq,
-                q_dynamic=ik_res.q_dynamic,
-                ik_result=ik_res,
-                passive_residual=residual,
+                message="Steady-state iteration failed to initialize IK.",
+                q_actuated={},
+                q_passive={},
+                q_dynamic={},
+                ik_result=IkSolveResult(
+                    success=False,
+                    status="steady_state_init_failed",
+                    message="steady-state iteration failed to initialize IK",
+                    q_dynamic={},
+                    q_actuated={},
+                    q_passive={},
+                    iterations=0,
+                    cost=float("inf"),
+                    pos_error_m=float("inf"),
+                    rot_error_rad=float("inf"),
+                ),
+                passive_residual=float("inf"),
+                fk_position_error_m=float("inf"),
+                fk_yaw_error_rad=float("inf"),
+                fk_xyz=np.zeros(3, dtype=float),
+                fk_yaw_rad=float("nan"),
             )
 
-        # Merge equilibrium passive values back into full map.
+        q_full_map = dict(ik_res.q_dynamic)
         q_full_map.update(q_p_eq)
         for follower, leader in self._cfg.tied_joints.items():
             if leader in q_full_map:
@@ -254,15 +327,115 @@ class CraneSteadyState:
 
         q_dyn_out = {jn: float(q_full_map.get(jn, 0.0)) for jn in self._cfg.dynamic_joints}
         q_act_out = {jn: float(q_full_map.get(jn, 0.0)) for jn in self._cfg.actuated_joints}
+        fk_xyz, fk_yaw_rad, fk_position_error_m, fk_yaw_error_rad = self._evaluate_fk_target_error(
+            q_full_map,
+            target_pos=p,
+            target_yaw=float(target_yaw),
+        )
+        fk_ok = (
+            np.isfinite(fk_position_error_m)
+            and np.isfinite(fk_yaw_error_rad)
+            and fk_position_error_m <= self._fk_position_tol_m
+            and abs(fk_yaw_error_rad) <= self._fk_yaw_tol_rad
+        )
+        success = bool(converged and fk_ok)
+        if success:
+            message = "Steady state computed successfully."
+        elif not converged:
+            message = "Steady state iteration reached max iterations before convergence."
+        else:
+            message = (
+                "Steady state rejected by FK truth check "
+                f"(pos_err={fk_position_error_m:.4f}m, yaw_err={fk_yaw_error_rad:.4f}rad)."
+            )
 
         return SteadyStateResult(
-            success=True,
-            message="Steady state computed successfully.",
+            success=success,
+            message=message,
             q_actuated=q_act_out,
             q_passive=q_p_eq,
             q_dynamic=q_dyn_out,
             ik_result=ik_res,
             passive_residual=residual,
+            fk_position_error_m=fk_position_error_m,
+            fk_yaw_error_rad=fk_yaw_error_rad,
+            fk_xyz=fk_xyz,
+            fk_yaw_rad=fk_yaw_rad,
+        )
+
+    def complete_from_actuated(
+        self,
+        q_actuated: Mapping[str, float],
+        *,
+        q_seed: Mapping[str, float] | None = None,
+    ) -> SteadyStateResult:
+        """Complete passive equilibrium for a known actuated joint state."""
+        q_full_map: dict[str, float] = {
+            jn: float(q_actuated.get(jn, 0.0)) for jn in self._cfg.actuated_joints
+        }
+        for follower, leader in self._cfg.tied_joints.items():
+            if leader in q_full_map:
+                q_full_map[follower] = q_full_map[leader]
+
+        q_p_eq, residual, passive_ok, passive_msg = self._passive_equilibrium(q_full_map, q_seed)
+        if not passive_ok:
+            q_dyn_out = {jn: float(q_full_map.get(jn, 0.0)) for jn in self._cfg.dynamic_joints}
+            q_act_out = {jn: float(q_full_map.get(jn, 0.0)) for jn in self._cfg.actuated_joints}
+            return SteadyStateResult(
+                success=False,
+                message=f"Passive equilibrium failed: {passive_msg} (residual={residual:.3e})",
+                q_actuated=q_act_out,
+                q_passive=q_p_eq,
+                q_dynamic=q_dyn_out,
+                ik_result=IkSolveResult(
+                    success=False,
+                    status="passive_equilibrium_failed",
+                    message="actuated-only completion",
+                    q_dynamic=q_dyn_out,
+                    q_actuated=q_act_out,
+                    q_passive=q_p_eq,
+                    iterations=0,
+                    cost=float("inf"),
+                    pos_error_m=float("inf"),
+                    rot_error_rad=float("inf"),
+                ),
+                passive_residual=residual,
+                fk_position_error_m=float("nan"),
+                fk_yaw_error_rad=float("nan"),
+                fk_xyz=np.zeros(3, dtype=float),
+                fk_yaw_rad=float("nan"),
+            )
+
+        q_full_map.update(q_p_eq)
+        for follower, leader in self._cfg.tied_joints.items():
+            if leader in q_full_map:
+                q_full_map[follower] = q_full_map[leader]
+
+        q_dyn_out = {jn: float(q_full_map.get(jn, 0.0)) for jn in self._cfg.dynamic_joints}
+        q_act_out = {jn: float(q_full_map.get(jn, 0.0)) for jn in self._cfg.actuated_joints}
+        return SteadyStateResult(
+            success=True,
+            message="Passive equilibrium completed successfully.",
+            q_actuated=q_act_out,
+            q_passive=q_p_eq,
+            q_dynamic=q_dyn_out,
+            ik_result=IkSolveResult(
+                success=True,
+                status="passive_equilibrium_only",
+                message="actuated-only completion",
+                q_dynamic=q_dyn_out,
+                q_actuated=q_act_out,
+                q_passive=q_p_eq,
+                iterations=0,
+                cost=0.0,
+                pos_error_m=0.0,
+                rot_error_rad=0.0,
+            ),
+            passive_residual=residual,
+            fk_position_error_m=0.0,
+            fk_yaw_error_rad=0.0,
+            fk_xyz=np.zeros(3, dtype=float),
+            fk_yaw_rad=float("nan"),
         )
 
     # ------------------------------------------------------------------ #
@@ -337,6 +510,28 @@ class CraneSteadyState:
             converged,
             msg,
         )
+
+    def _evaluate_fk_target_error(
+        self,
+        q_map: Mapping[str, float],
+        *,
+        target_pos: np.ndarray,
+        target_yaw: float,
+    ) -> tuple[np.ndarray, float, float, float]:
+        q_full = dict(q_map)
+        for follower, leader in self._cfg.tied_joints.items():
+            if leader in q_full:
+                q_full[follower] = float(q_full[leader])
+        T = self._ik._analytic._fk(
+            q_full,
+            base_frame=self._base_frame,
+            end_frame=self._end_frame,
+        )
+        fk_xyz = np.asarray(T[:3, 3], dtype=float).reshape(3)
+        fk_yaw = float(np.arctan2(T[1, 0], T[0, 0]))
+        pos_err = float(np.linalg.norm(fk_xyz - np.asarray(target_pos, dtype=float).reshape(3)))
+        yaw_err = float(np.arctan2(np.sin(fk_yaw - float(target_yaw)), np.cos(fk_yaw - float(target_yaw))))
+        return fk_xyz, fk_yaw, pos_err, yaw_err
 
 
 # ------------------------------------------------------------------ #

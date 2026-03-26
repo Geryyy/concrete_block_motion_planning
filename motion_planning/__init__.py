@@ -88,6 +88,7 @@ except Exception:  # pragma: no cover - optional dependency surface
 # ── Core types ────────────────────────────────────────────────────────────────
 try:
     from .core.spline import BSplinePath
+    from .contracts import JointMapping, RobotProfile, TrajectoryContract
     from .core.types import (
         PlannerRequest,
         PlannerResult,
@@ -107,12 +108,18 @@ try:
         "TrajectoryResult",
         "WallPlacement",
         "WallPlan",
+        "JointMapping",
+        "RobotProfile",
+        "TrajectoryContract",
     ]
 except Exception:  # pragma: no cover - optional dependency surface
     BSplinePath = None
+    JointMapping = None
     PlannerRequest = None
     PlannerResult = None
+    RobotProfile = None
     Scenario = None
+    TrajectoryContract = None
     TrajectoryRequest = None
     TrajectoryResult = None
     WallPlacement = None

@@ -1,142 +1,119 @@
-# concrete_block_motion_planning Services
+# `concrete_block_motion_planning` Services
 
-This package exposes ROS 2 services from `motion_planning_node.py`.
+Node name by default:
 
-By default (from `launch/motion_planning.launch.py`), the node name is:
 - `concrete_block_motion_planning_node`
 
-So private service names like `~/plan_geometric_path` resolve to:
-- `/concrete_block_motion_planning_node/plan_geometric_path`
+Private services therefore resolve to paths like:
 
-## Service Catalog
+- `/concrete_block_motion_planning_node/plan_and_compute_trajectory`
 
-### `~/plan_geometric_path` (`PlanGeometricPath`)
+## Canonical operator-facing services
+
+### `~/plan_and_compute_trajectory`
+
 Purpose:
-- Computes a geometric Cartesian path between `start_pose` and `goal_pose`.
 
-Inputs (main):
+- main backend-neutral planning entrypoint
+- used by the current commissioning BTs
+
+Inputs:
+
 - `start_pose`, `goal_pose`
-- `method` (optional, falls back to `default_geometric_method`)
-
-Outputs:
-- `success`
-- `geometric_plan_id`
-- `cartesian_path` (`nav_msgs/Path`)
-- `message`
-
-Capability notes:
-- This is the geometric stage only (task-space path generation).
-- Stores result internally by `geometric_plan_id` for later trajectory computation.
-
-### `~/compute_trajectory` (`ComputeTrajectory`)
-Purpose:
-- Converts a geometric path into a time-parameterized joint trajectory.
-
-Inputs (main):
-- Either `geometric_plan_id` (stored from geometric stage) or `direct_path` with `use_direct_path=true`
-- `method` (trajectory optimizer profile)
-- `timeout_s`, `validate_dynamics`
-
-Outputs:
-- `success`
-- `trajectory_id`
-- `trajectory` (`trajectory_msgs/JointTrajectory`)
-- `message`
-
-Capability notes:
-- Solves start/goal IK/steady-state from Cartesian poses.
-- Runs trajectory optimization in joint/configuration space.
-- Stores trajectory internally by `trajectory_id`.
-
-### `~/plan_and_compute_trajectory` (`PlanAndComputeTrajectory`)
-Purpose:
-- Convenience API that executes geometric planning and trajectory computation in one call.
-
-Inputs (main):
-- `start_pose`, `goal_pose`
-- Optional task context: `target_block_id`, `reference_block_id`, `use_world_model`
-- `geometric_method`, `geometric_timeout_s`
-- `trajectory_method`, `trajectory_timeout_s`, `validate_dynamics`
-
-Outputs:
-- `success`
-- `geometric_plan_id`
-- `cartesian_path` (`nav_msgs/Path`)
-- `trajectory_id`
-- `trajectory` (`trajectory_msgs/JointTrajectory`)
-- `message`
-
-### `~/execute_trajectory` (`ExecuteTrajectory`)
-Purpose:
-- Handles execution requests for a stored `trajectory_id`.
-
-Inputs:
-- `trajectory_id`
-- `dry_run`
-
-Outputs:
-- `success`
-- `message`
-
-Capability notes:
-- `dry_run=true`: validates and returns success.
-- `dry_run=false`: dispatches using configured execution backend if enabled:
-  - topic backend: publish to `execution.trajectory_topic`
-  - action backend: send to `execution.action_name` (`FollowJointTrajectory`)
-- Otherwise returns failure with a clear dispatch reason.
-
-### `~/execute_named_configuration` (`ExecuteNamedConfiguration`)
-Purpose:
-- Resolves a named joint configuration to a stored trajectory entry.
-
-Inputs:
-- `configuration_name`
-- `timeout_s` (present in interface; not used for local execution here)
-- `dry_run`
-
-Outputs:
-- `success`
-- `trajectory_id`
-- `message`
-
-Capability notes:
-- Creates a trajectory from preloaded named configurations.
-- Non-dry-run follows the same optional direct-dispatch behavior as `~/execute_trajectory`.
-
-### `~/get_next_assembly_task` (`GetNextAssemblyTask`)
-Purpose:
-- Provides sequential wall-assembly tasks from a selected wall plan.
-
-Inputs:
-- `wall_plan_name`
-- `reset_plan`
-
-Outputs:
-- `success`, `has_task`
-- `task_id`
 - `target_block_id`, `reference_block_id`
-- `target_pose`, `reference_pose`
+- `use_world_model`
+- `geometric_method`, `geometric_timeout_s`
+- `trajectory_method`, `trajectory_timeout_s`
+- `validate_dynamics`
+
+Behavior:
+
+- resolves planning context from the world model
+- dispatches to the active planner backend
+- stores the resulting trajectory
+- publishes planned path to RViz when available
+
+Current note:
+
+- for the CBS/concrete path, this is the preferred shared-shell entrypoint
+- the concrete online default is `TOPPRA_PATH_FOLLOWING`
+- for the timber path, this remains the working reference service
+
+### `~/execute_trajectory`
+
+Purpose:
+
+- execute a stored trajectory by `trajectory_id`
+
+Inputs:
+
+- `trajectory_id`
+- `dry_run`
+
+Behavior:
+
+- `dry_run=true` validates only
+- `dry_run=false` dispatches through the configured execution backend
+
+### `~/execute_named_configuration`
+
+Purpose:
+
+- resolve and optionally execute a named configuration
+
+Inputs:
+
+- `configuration_name`
+- `dry_run`
+
+Outputs:
+
+- `trajectory_id`
+- `success`
 - `message`
 
-Capability notes:
-- Tracks progress per wall plan.
-- Returns `has_task=false` when plan is complete.
+### `~/get_next_assembly_task`
 
-## Actions
+Purpose:
 
-This package does not define or host ROS 2 actions in this node.
+- retrieve the next task from the active wall plan
 
-Notes:
-- No `.action` files are defined in the package.
+Outputs:
 
-## Planning Space: Task Space or Configuration Space?
+- `task_id`
+- `target_block_id`
+- `reference_block_id`
+- `has_task`
 
-Short answer:
-- Both.
+This is the task-selection seam used by `Single block plan` and `Single block execute`.
 
-How it is split:
-- Stage 1 (`~/plan_geometric_path`): task-space planning (Cartesian path between poses).
-- Stage 2 (`~/compute_trajectory`): configuration-space trajectory generation (joint trajectory) using IK/steady-state mapping and optimization.
+## Lower-level staged services
 
-Operationally, this node is a two-stage planner:
-- Cartesian geometric planning followed by joint-space trajectory optimization.
+These remain useful for debugging and CBS commissioning:
+
+### `~/plan_geometric_path`
+
+- geometric path only
+- most relevant for `planner.backend:=concrete`
+
+### `~/compute_trajectory`
+
+- trajectory stage only
+- useful when commissioning the concrete IK + TOPP-RA stage separately from geometric planning
+
+## World-model context used by the planner
+
+The shared planner shell currently talks to:
+
+- `/world_model_node/get_planning_scene`
+
+The planning-scene response includes:
+
+- block objects from the persistent world model
+- static crane/environment obstacles
+
+CBS/FCL scene building should consume that centralized scene rather than reconstructing obstacles locally.
+
+Compatibility note:
+
+- `/world_model_node/get_coarse_blocks` still exists for block-only consumers, but it is no longer the intended scene source for CBS obstacle-aware planning.

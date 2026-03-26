@@ -10,10 +10,11 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from tf2_ros import Buffer, TransformListener
 from std_msgs.msg import String
 from nav_msgs.msg import Path as NavPath
+from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory
 from control_msgs.action import FollowJointTrajectory
 from controller_manager_msgs.srv import SwitchController
-from concrete_block_perception.srv import GetCoarseBlocks
+from concrete_block_perception.srv import GetCoarseBlocks, GetPlanningScene
 
 from concrete_block_motion_planning.srv import (
     ComputeTrajectory,
@@ -48,14 +49,21 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
 
         self._status_pub = self.create_publisher(String, "~/trajectory_backend_status", 10)
         self._planned_path_pub = self.create_publisher(NavPath, "~/planned_path", 10)
+        self._planned_trajectory_path_pub = self.create_publisher(
+            NavPath, "~/planned_trajectory_path", 10
+        )
         self._trajectory_cmd_pub = None
         self._trajectory_action_client = None
         self._switch_controller_client = None
+        self._joint_state_sub = None
         self._get_coarse_blocks_client = None
+        self._get_planning_scene_client = None
         self._robot_description_sub = None
         self._tf_buffer = None
         self._tf_listener = None
         self._robot_description_xml = ""
+        self._joint_goal_stage = None
+        self._latest_joint_positions: Dict[str, float] = {}
         self._initialize_execution_io()
         self._initialize_world_model_io()
         self._initialize_robot_description_io()
@@ -87,6 +95,7 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
         self._analytic_cfg = self._state.analytic_cfg
         self._steady_state_solver = self._state.steady_state_solver
         self._reduced_joint_names = self._state.reduced_joint_names
+        self._reduced_joint_velocity_limits = self._state.reduced_joint_velocity_limits
         self._ik_seed_map = self._state.ik_seed_map
         self._T_world_base = self._state.t_world_base
         self._T_base_world = self._state.t_base_world
@@ -157,11 +166,21 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
         self._traj_acados_verbose = self._cfg.traj_acados_verbose
         self._traj_fixed_duration_s = max(0.1, float(self._cfg.traj_fixed_duration_s))
         self._traj_fixed_num_points = max(2, int(self._cfg.traj_fixed_num_points))
+        self._traj_toppra_gridpoints = max(10, int(self._cfg.traj_toppra_gridpoints))
+        self._traj_joint_position_limits_file = self._cfg.traj_joint_position_limits_file
+        self._traj_joint_accel_limits_file = self._cfg.traj_joint_accel_limits_file
         self._execution_enabled = self._cfg.execution_enabled
         self._execution_backend = self._cfg.execution_backend.strip().lower()
         self._execution_trajectory_topic = self._cfg.execution_trajectory_topic.strip()
         self._execution_action_name = self._cfg.execution_action_name.strip()
+        self._execution_joint_states_topic = self._cfg.execution_joint_states_topic.strip()
         self._execution_result_timeout_s = max(1.0, float(self._cfg.execution_result_timeout_s))
+        self._execution_motion_check_timeout_s = max(
+            0.0, float(self._cfg.execution_motion_check_timeout_s)
+        )
+        self._execution_motion_min_delta = max(
+            1e-4, float(self._cfg.execution_motion_min_delta)
+        )
         self._execution_switch_controller = bool(self._cfg.execution_switch_controller)
         self._execution_switch_service = self._cfg.execution_switch_service.strip()
         self._execution_activate_controller = self._cfg.execution_activate_controller.strip()
@@ -169,6 +188,9 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
         self._robot_description_topic = self._cfg.robot_description_topic.strip()
         self._world_model_get_coarse_blocks_service = (
             self._cfg.world_model_get_coarse_blocks_service.strip()
+        )
+        self._world_model_get_planning_scene_service = (
+            self._cfg.world_model_get_planning_scene_service.strip()
         )
 
         self._named_configurations_file = self._cfg.named_configurations_file
@@ -226,6 +248,14 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
         if not self._execution_enabled:
             return
         self._execution_cb_group = ReentrantCallbackGroup()
+        if self._execution_joint_states_topic:
+            self._joint_state_sub = self.create_subscription(
+                JointState,
+                self._execution_joint_states_topic,
+                self._on_joint_state,
+                10,
+                callback_group=self._execution_cb_group,
+            )
         if self._execution_backend == "action":
             if not self._execution_action_name:
                 self.get_logger().warn(
@@ -272,14 +302,19 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
         )
 
     def _initialize_world_model_io(self) -> None:
-        if not self._world_model_get_coarse_blocks_service:
-            return
         self._world_model_cb_group = ReentrantCallbackGroup()
-        self._get_coarse_blocks_client = self.create_client(
-            GetCoarseBlocks,
-            self._world_model_get_coarse_blocks_service,
-            callback_group=self._world_model_cb_group,
-        )
+        if self._world_model_get_coarse_blocks_service:
+            self._get_coarse_blocks_client = self.create_client(
+                GetCoarseBlocks,
+                self._world_model_get_coarse_blocks_service,
+                callback_group=self._world_model_cb_group,
+            )
+        if self._world_model_get_planning_scene_service:
+            self._get_planning_scene_client = self.create_client(
+                GetPlanningScene,
+                self._world_model_get_planning_scene_service,
+                callback_group=self._world_model_cb_group,
+            )
 
     def _initialize_robot_description_io(self) -> None:
         if not self._robot_description_topic:
@@ -316,6 +351,18 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
     @staticmethod
     def _empty_trajectory() -> JointTrajectory:
         return JointTrajectory()
+
+    def _on_joint_state(self, msg: JointState) -> None:
+        for idx, name in enumerate(msg.name):
+            if idx < len(msg.position):
+                self._latest_joint_positions[str(name)] = float(msg.position[idx])
+
+    def _snapshot_joint_positions(self, joint_names: List[str]) -> Dict[str, float]:
+        return {
+            str(name): float(self._latest_joint_positions[name])
+            for name in joint_names
+            if str(name) in self._latest_joint_positions
+        }
 
     def _on_robot_description(self, msg: String) -> None:
         if self._planner_backend_name != "concrete":

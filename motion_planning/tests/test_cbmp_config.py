@@ -36,9 +36,12 @@ def test_declare_and_load_config_defaults() -> None:
     cfg = declare_and_load_config(node)
 
     assert cfg.default_geometric_method == "POWELL"
-    assert cfg.default_trajectory_method == "ACADOS_PATH_FOLLOWING"
+    assert cfg.default_trajectory_method == "TOPPRA_PATH_FOLLOWING"
     assert cfg.path_interpolation_points == 81
     assert cfg.moving_block_size == (0.6, 0.9, 0.6)
+    assert cfg.traj_toppra_gridpoints == 121
+    assert cfg.traj_joint_position_limits_file.endswith("planning_limits.yaml")
+    assert cfg.traj_joint_accel_limits_file.endswith("joint_accel_limits.yaml")
     assert cfg.execution_enabled is False
     assert cfg.execution_backend == "topic"
     assert cfg.execution_activate_controller == "trajectory_controllers"

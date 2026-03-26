@@ -35,6 +35,7 @@ class MotionPlanningState:
     analytic_cfg: Any = None
     steady_state_solver: Any = None
     reduced_joint_names: List[str] = field(default_factory=list)
+    reduced_joint_velocity_limits: Dict[str, float] = field(default_factory=dict)
     ik_seed_map: Dict[str, float] = field(default_factory=dict)
     t_world_base: np.ndarray = field(default_factory=lambda: np.eye(4, dtype=float))
     t_base_world: np.ndarray = field(default_factory=lambda: np.eye(4, dtype=float))

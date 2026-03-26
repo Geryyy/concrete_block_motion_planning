@@ -69,6 +69,11 @@ class ConcretePlannerBackend(PlannerBackend):
             traj_req,
             ComputeTrajectory.Response(),
         )
+        actual_path = plan.path
+        if traj_res.success and traj_res.trajectory_id:
+            stored = self._node._trajectories.get(traj_res.trajectory_id)
+            if stored is not None and stored.cartesian_path.poses:
+                actual_path = stored.cartesian_path
         return BackendPlanResult(
             success=bool(traj_res.success),
             message=(
@@ -79,7 +84,6 @@ class ConcretePlannerBackend(PlannerBackend):
                 f"{plan.message} | {traj_res.message}"
             ),
             trajectory=traj_res.trajectory,
-            cartesian_path=plan.path,
+            cartesian_path=actual_path,
             geometric_plan_id=geometric_plan_id,
         )
-

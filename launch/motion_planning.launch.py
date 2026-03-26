@@ -61,7 +61,7 @@ def generate_launch_description():
                 "motion_planning_params_file", default_value=config_file
             ),
             DeclareLaunchArgument(
-                "default_trajectory_method", default_value="ACADOS_PATH_FOLLOWING"
+                "default_trajectory_method", default_value="TOPPRA_PATH_FOLLOWING"
             ),
             DeclareLaunchArgument(
                 "named_configurations_file", default_value=named_cfg_file
@@ -97,6 +97,10 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "world_model_get_coarse_blocks_service",
                 default_value="/world_model_node/get_coarse_blocks",
+            ),
+            DeclareLaunchArgument(
+                "world_model_get_planning_scene_service",
+                default_value="/world_model_node/get_planning_scene",
             ),
             Node(
                 package="concrete_block_motion_planning",
@@ -177,6 +181,11 @@ def generate_launch_description():
                     {
                         "world_model.get_coarse_blocks_service": LaunchConfiguration(
                             "world_model_get_coarse_blocks_service"
+                        )
+                    },
+                    {
+                        "world_model.get_planning_scene_service": LaunchConfiguration(
+                            "world_model_get_planning_scene_service"
                         )
                     },
                     {"use_sim_time": LaunchConfiguration("use_sim_time")},

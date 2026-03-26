@@ -26,10 +26,15 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 install(PROGRAMS
   scripts/motion_planning_node.py
+  scripts/acados_benchmark.py
+  scripts/bare_metal_single_block_client.py
+  scripts/headless_trajectory_smoke.py
+  scripts/joint_goal_feasibility_probe.py
   scripts/rviz_move_empty_interface.py
   scripts/joint_state_timber_compat.py
   scripts/timber_follow_joint_trajectory_proxy.py
   scripts/dummy_gripper_state_publisher.py
+  motion_planning_tools/standalone/run_planner_experiment.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

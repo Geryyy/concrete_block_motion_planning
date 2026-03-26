@@ -1,0 +1,86 @@
+profiles:
+  slew_oneway:
+    joint_names:
+      - theta1_slewing_joint
+      - theta2_boom_joint
+      - theta3_arm_joint
+      - q4_big_telescope
+      - theta6_tip_joint
+      - theta7_tilt_joint
+      - theta8_rotator_joint
+      - q9_left_rail_joint
+    waypoints:
+      - time_from_start: 0.0
+        deltas: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      - time_from_start: 4.0
+        deltas: [0.20, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+  telescope_oneway:
+    joint_names:
+      - theta1_slewing_joint
+      - theta2_boom_joint
+      - theta3_arm_joint
+      - q4_big_telescope
+      - theta6_tip_joint
+      - theta7_tilt_joint
+      - theta8_rotator_joint
+      - q9_left_rail_joint
+    waypoints:
+      - time_from_start: 0.0
+        deltas: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      - time_from_start: 4.0
+        deltas: [0.0, 0.0, 0.0, 0.20, 0.0, 0.0, 0.0, 0.0]
+
+  slew_out_and_back:
+    joint_names:
+      - theta1_slewing_joint
+      - theta2_boom_joint
+      - theta3_arm_joint
+      - q4_big_telescope
+      - theta6_tip_joint
+      - theta7_tilt_joint
+      - theta8_rotator_joint
+      - q9_left_rail_joint
+    waypoints:
+      - time_from_start: 0.0
+        deltas: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      - time_from_start: 4.0
+        deltas: [0.20, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      - time_from_start: 8.0
+        deltas: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+  telescope_out_and_back:
+    joint_names:
+      - theta1_slewing_joint
+      - theta2_boom_joint
+      - theta3_arm_joint
+      - q4_big_telescope
+      - theta6_tip_joint
+      - theta7_tilt_joint
+      - theta8_rotator_joint
+      - q9_left_rail_joint
+    waypoints:
+      - time_from_start: 0.0
+        deltas: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      - time_from_start: 4.0
+        deltas: [0.0, 0.0, 0.0, 0.20, 0.0, 0.0, 0.0, 0.0]
+      - time_from_start: 8.0
+        deltas: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+  composite_small:
+    joint_names:
+      - theta1_slewing_joint
+      - theta2_boom_joint
+      - theta3_arm_joint
+      - q4_big_telescope
+      - theta6_tip_joint
+      - theta7_tilt_joint
+      - theta8_rotator_joint
+      - q9_left_rail_joint
+    waypoints:
+      - time_from_start: 0.0
+        deltas: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      - time_from_start: 4.0
+        deltas: [0.10, 0.0, 0.06, 0.10, 0.0, 0.0, 0.15, 0.0]
+      - time_from_start: 8.0
+        deltas: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

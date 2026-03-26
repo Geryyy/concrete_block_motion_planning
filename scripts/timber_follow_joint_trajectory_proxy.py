@@ -7,7 +7,17 @@ import time
 from typing import Dict
 
 import rclpy
+from cbmp.path_setup import ensure_motion_planning_on_path
+
+ensure_motion_planning_on_path()
+
 from control_msgs.action import FollowJointTrajectory
+from motion_planning.adapters import (
+    JointSampleMaps,
+    densify_trajectory_for_streaming,
+    expand_point_to_profile,
+)
+from motion_planning.profiles import CONCRETE_PZS100_PROFILE
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
@@ -27,16 +37,7 @@ class TimberFollowJointTrajectoryProxy(Node):
         self.declare_parameter("joint_states_topic", "/joint_states")
         self.declare_parameter(
             "target_joint_names",
-            [
-                "theta1_slewing_joint",
-                "theta2_boom_joint",
-                "theta3_arm_joint",
-                "q4_big_telescope",
-                "theta6_tip_joint",
-                "theta7_tilt_joint",
-                "theta8_rotator_joint",
-                "q9_left_rail_joint",
-            ],
+            list(CONCRETE_PZS100_PROFILE.full_state_joint_names),
         )
         self.declare_parameter("input_compat_gripper_joint", "theta10_outer_jaw_joint")
         self.declare_parameter("output_gripper_joint", "q9_left_rail_joint")
@@ -173,18 +174,16 @@ class TimberFollowJointTrajectoryProxy(Node):
             and trajectory.points[0].velocities
             and len(trajectory.points[0].velocities) == expected_dim
         ):
-            return trajectory
+            if len(trajectory.points) == 1:
+                return self._densify_single_point_trajectory(trajectory)
+            return densify_trajectory_for_streaming(
+                trajectory,
+                sample_period_s=self._named_pose_sample_period_s,
+            )
 
         output = JointTrajectory()
         output.header = trajectory.header
         output.joint_names = list(self._target_joint_names)
-
-        current_gripper = self._latest_joint_state.get(
-            self._output_gripper_joint,
-            self._latest_joint_state.get(self._input_compat_gripper_joint, 0.0),
-        )
-        current_tip = self._latest_joint_state.get("theta6_tip_joint", 0.0)
-        current_tilt = self._latest_joint_state.get("theta7_tilt_joint", 0.0)
 
         for point in trajectory.points:
             expanded = JointTrajectoryPoint()
@@ -193,56 +192,28 @@ class TimberFollowJointTrajectoryProxy(Node):
             pos_map = self._to_map(trajectory.joint_names, point.positions)
             vel_map = self._to_map(trajectory.joint_names, point.velocities)
             acc_map = self._to_map(trajectory.joint_names, point.accelerations)
-
-            compat_gripper_position = pos_map.get(
-                self._output_gripper_joint,
-                pos_map.get(self._input_compat_gripper_joint, current_gripper),
+            positions, velocities, accelerations = expand_point_to_profile(
+                source_joint_names=list(trajectory.joint_names),
+                sample_maps=JointSampleMaps(
+                    positions=pos_map,
+                    velocities=vel_map,
+                    accelerations=acc_map,
+                ),
+                latest_positions=self._latest_joint_state,
+                target_profile=CONCRETE_PZS100_PROFILE,
             )
-            compat_gripper_velocity = vel_map.get(
-                self._output_gripper_joint,
-                vel_map.get(self._input_compat_gripper_joint, 0.0),
-            )
-            compat_gripper_acceleration = acc_map.get(
-                self._output_gripper_joint,
-                acc_map.get(self._input_compat_gripper_joint, 0.0),
-            )
-
-            expanded.positions = [
-                pos_map.get("theta1_slewing_joint", 0.0),
-                pos_map.get("theta2_boom_joint", 0.0),
-                pos_map.get("theta3_arm_joint", 0.0),
-                pos_map.get("q4_big_telescope", 0.0),
-                pos_map.get("theta6_tip_joint", current_tip),
-                pos_map.get("theta7_tilt_joint", current_tilt),
-                pos_map.get("theta8_rotator_joint", 0.0),
-                compat_gripper_position,
-            ]
+            expanded.positions = positions
             if point.velocities:
-                expanded.velocities = [
-                    vel_map.get("theta1_slewing_joint", 0.0),
-                    vel_map.get("theta2_boom_joint", 0.0),
-                    vel_map.get("theta3_arm_joint", 0.0),
-                    vel_map.get("q4_big_telescope", 0.0),
-                    vel_map.get("theta6_tip_joint", 0.0),
-                    vel_map.get("theta7_tilt_joint", 0.0),
-                    vel_map.get("theta8_rotator_joint", 0.0),
-                    compat_gripper_velocity,
-                ]
+                expanded.velocities = velocities
             if point.accelerations:
-                expanded.accelerations = [
-                    acc_map.get("theta1_slewing_joint", 0.0),
-                    acc_map.get("theta2_boom_joint", 0.0),
-                    acc_map.get("theta3_arm_joint", 0.0),
-                    acc_map.get("q4_big_telescope", 0.0),
-                    acc_map.get("theta6_tip_joint", 0.0),
-                    acc_map.get("theta7_tilt_joint", 0.0),
-                    acc_map.get("theta8_rotator_joint", 0.0),
-                    compat_gripper_acceleration,
-                ]
+                expanded.accelerations = accelerations
             output.points.append(expanded)
         if len(output.points) == 1:
             return self._densify_single_point_trajectory(output)
-        return output
+        return densify_trajectory_for_streaming(
+            output,
+            sample_period_s=self._named_pose_sample_period_s,
+        )
 
     def _densify_single_point_trajectory(
         self, trajectory: JointTrajectory

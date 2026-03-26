@@ -23,6 +23,7 @@ from concrete_block_motion_planning.srv import (
     PlanAndComputeTrajectory,
     PlanGeometricPath,
 )
+from cbmp.types import StoredTrajectory
 
 
 @pytest.fixture(scope="module")
@@ -92,6 +93,38 @@ def test_execute_trajectory_unknown_id_returns_failure(ros_runtime) -> None:
     assert res is not None
     assert res.success is False
     assert "Unknown trajectory_id" in res.message
+
+
+def test_execute_trajectory_refuses_concrete_joint_linear_fallback(ros_runtime) -> None:
+    server_node, client_node = ros_runtime
+    client = client_node.create_client(
+        ExecuteTrajectory,
+        _service_name(server_node.get_name(), "execute_trajectory"),
+    )
+    assert client.wait_for_service(timeout_sec=3.0)
+
+    traj = JointTrajectory()
+    traj.joint_names = ["theta1_slewing_joint"]
+    point = JointTrajectoryPoint()
+    point.positions = [0.0]
+    point.velocities = [0.0]
+    traj.points = [point]
+    server_node._trajectories["traj_concrete_fallback"] = StoredTrajectory(
+        trajectory_id="traj_concrete_fallback",
+        trajectory=traj,
+        success=True,
+        message="Generated fixed-time interpolated joint trajectory using JOINT_LINEAR_INTERPOLATION.",
+        method="TOPPRA_PATH_FOLLOWING",
+        geometric_plan_id="geo_test",
+    )
+
+    req = ExecuteTrajectory.Request()
+    req.trajectory_id = "traj_concrete_fallback"
+    req.dry_run = False
+    res = _call_service(client_node, client, req)
+    assert res is not None
+    assert res.success is False
+    assert "Refusing to execute concrete fallback trajectory" in res.message
 
 
 def test_named_configuration_and_wall_task_error_paths(ros_runtime) -> None:

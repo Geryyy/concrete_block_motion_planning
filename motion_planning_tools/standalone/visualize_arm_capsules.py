@@ -67,8 +67,6 @@ _CAPSULE_DEFS = [
     ("K11",                         "K12_inner_jaw",           0.04, "Inner jaw (K11→K12, r=0.04 m)",     "#bab0ac"),
 ]
 
-# Real CBS concrete block dimensions [m]
-_CBS_BLOCK_SIZE = (0.60, 0.60, 0.90)
 
 # ── validated configs (mirror of standalone/scenarios.py) ──────────────────
 _HOVER = {
@@ -242,7 +240,7 @@ def visualize(scenario_name: str, q_act: np.ndarray, title_suffix: str = "") -> 
     d_arm = model.clearance(q_map, scene, ignore_ids=["table"])
     d_pay = model.payload_clearance(
         scene_cfg.goal, scene_cfg.goal_yaw_deg * np.pi / 180,
-        _CBS_BLOCK_SIZE, scene,
+        scene_cfg.moving_block_size, scene,
     )
 
     fig = plt.figure(figsize=(13, 9))
@@ -263,10 +261,10 @@ def visualize(scenario_name: str, q_act: np.ndarray, title_suffix: str = "") -> 
     goal_quat = (0, 0, np.sin(np.radians(scene_cfg.goal_yaw_deg) / 2),
                       np.cos(np.radians(scene_cfg.goal_yaw_deg) / 2))
     ax.add_collection3d(Poly3DCollection(
-        _box_faces(scene_cfg.goal, _CBS_BLOCK_SIZE, goal_quat),
+        _box_faces(scene_cfg.goal, scene_cfg.moving_block_size, goal_quat),
         alpha=0.20, facecolor="limegreen", edgecolor="green", linewidth=1.2))
     gp = np.asarray(scene_cfg.goal)
-    ax.text(gp[0], gp[1], gp[2]-0.06, "goal (60×60×90 cm)",
+    ax.text(gp[0], gp[1], gp[2]-0.06, f"goal ({scene_cfg.moving_block_size})",
             ha="center", fontsize=7, color="green")
 
     ax.scatter(0, 0, 0, s=120, marker="^", color="red", zorder=15)
@@ -290,7 +288,7 @@ def visualize(scenario_name: str, q_act: np.ndarray, title_suffix: str = "") -> 
     ] + [
         mpatches.Patch(color="gray",        alpha=0.6, label="Scene blocks"),
         mpatches.Patch(color="saddlebrown", alpha=0.6, label="Table"),
-        mpatches.Patch(color="limegreen",   alpha=0.5, label="Goal (60×60×90 cm)"),
+        mpatches.Patch(color="limegreen",   alpha=0.5, label="Goal position (moving block)"),
         plt.Line2D([0],[0], color="black",   linewidth=2, marker="o", markersize=5,
                    label="Skeleton K0→K5"),
         plt.Line2D([0],[0], color="#9c755f", linewidth=2, marker="o", markersize=4,
@@ -336,7 +334,7 @@ def visualize_multi(scenario_name: str, configs: list[tuple], labels: list[str])
                 alpha=alpha, facecolor=color, edgecolor="dimgray", linewidth=0.5))
 
         ax.add_collection3d(Poly3DCollection(
-            _box_faces(scene_cfg.goal, _CBS_BLOCK_SIZE),
+            _box_faces(scene_cfg.goal, scene_cfg.moving_block_size),
             alpha=0.18, facecolor="limegreen", edgecolor="green", linewidth=1.0))
 
         ax.scatter(0, 0, 0, s=100, marker="^", color="red", zorder=15)

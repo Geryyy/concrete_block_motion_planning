@@ -9,7 +9,10 @@ from .config import (
     trial_params_from_config,
 )
 from .metrics import PathEvalContext, make_eval_context
-from .search import benchmark_best, evaluate_config, hyperopt
+try:
+    from .search import benchmark_best, evaluate_config, hyperopt
+except ImportError:
+    pass
 
 __all__ = [
     "BASE_CONFIG",

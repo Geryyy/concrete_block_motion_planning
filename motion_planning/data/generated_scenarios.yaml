@@ -3,28 +3,20 @@ defaults:
     - 0.9
     - 0.6
     - 0.6
+
+# All scenes translated to CBS crane workspace.
+# Crane sits at origin; TCP reaches ~8-12 m in -x direction at 2-3 m height.
+# Translation applied vs abstract original: dx=-10, dy=0, dz=+2.0
+
 scenarios:
   step_01_first_on_ground:
     blocks:
-      -
-        id: table
-        size:
-          - 4.0
-          - 4.0
-          - 0.1
-        position:
-          - 0.0
-          - 0.0
-          - 0.05
+      - id: table
+        size: [4.0, 4.0, 0.1]
+        position: [-10.0, 0.0, 2.05]
     moving_block:
-      size:
-        - 0.9
-        - 0.6
-        - 0.6
-      start:
-        - 0.0
-        - 0.0
-        - 1.3
+      size: [0.9, 0.6, 0.6]
+      start: [-10.0, 0.0, 3.3]
       start_yaw_deg: 0.0
       goal_yaw_deg: 0.0
       goal:
@@ -32,53 +24,23 @@ scenarios:
         base: table
         face: top
         gap: 0.0
-        tangential_offset:
-          - 0.0
-          - 0.0
-        size:
-          - 0.9
-          - 0.6
-          - 0.6
+        tangential_offset: [0.0, 0.0]
+        size: [0.9, 0.6, 0.6]
       goal_normals:
-        -
-          - 0.0
-          - 0.0
-          - 1.0
-      approach_direction:
-        - 0.0
-        - 0.0
-        - -1.0
+        - [0.0, 0.0, 1.0]
+      approach_direction: [0.0, 0.0, -1.0]
+
   step_02_second_in_front:
     blocks:
-      -
-        id: table
-        size:
-          - 4.0
-          - 4.0
-          - 0.1
-        position:
-          - 0.0
-          - 0.0
-          - 0.05
-      -
-        id: block_1
-        size:
-          - 0.9
-          - 0.6
-          - 0.6
-        position:
-          - 0.0
-          - 0.0
-          - 0.4
+      - id: table
+        size: [4.0, 4.0, 0.1]
+        position: [-10.0, 0.0, 2.05]
+      - id: block_1
+        size: [0.9, 0.6, 0.6]
+        position: [-10.0, 0.0, 2.4]
     moving_block:
-      size:
-        - 0.9
-        - 0.6
-        - 0.6
-      start:
-        - 1.748528
-        - 0.0
-        - 1.3
+      size: [0.9, 0.6, 0.6]
+      start: [-8.25, 0.0, 3.3]
       start_yaw_deg: 0.0
       goal_yaw_deg: 0.0
       goal:
@@ -86,67 +48,27 @@ scenarios:
         base: block_1
         face: front
         gap: 0.0
-        tangential_offset:
-          - 0.0
-          - 0.0
-        size:
-          - 0.9
-          - 0.6
-          - 0.6
+        tangential_offset: [0.0, 0.0]
+        size: [0.9, 0.6, 0.6]
       goal_normals:
-        -
-          - 1.0
-          - 0.0
-          - 0.0
-        -
-          - 0.0
-          - 0.0
-          - 1.0
-      approach_direction:
-        - -0.707107
-        - 0.0
-        - -0.707107
+        - [1.0, 0.0, 0.0]
+        - [0.0, 0.0, 1.0]
+      approach_direction: [-0.707107, 0.0, -0.707107]
+
   step_03_third_on_top:
     blocks:
-      -
-        id: table
-        size:
-          - 4.0
-          - 4.0
-          - 0.1
-        position:
-          - 0.0
-          - 0.0
-          - 0.05
-      -
-        id: block_1
-        size:
-          - 0.9
-          - 0.6
-          - 0.6
-        position:
-          - 0.0
-          - 0.0
-          - 0.4
-      -
-        id: block_2
-        size:
-          - 0.9
-          - 0.6
-          - 0.6
-        position:
-          - 0.9
-          - 0.0
-          - 0.4
+      - id: table
+        size: [4.0, 4.0, 0.1]
+        position: [-10.0, 0.0, 2.05]
+      - id: block_1
+        size: [0.9, 0.6, 0.6]
+        position: [-10.0, 0.0, 2.4]
+      - id: block_2
+        size: [0.9, 0.6, 0.6]
+        position: [-9.1, 0.0, 2.4]
     moving_block:
-      size:
-        - 0.9
-        - 0.6
-        - 0.6
-      start:
-        - 0.9
-        - 0.0
-        - 1.9
+      size: [0.9, 0.6, 0.6]
+      start: [-9.1, 0.0, 3.3]
       start_yaw_deg: 0.0
       goal_yaw_deg: 0.0
       goal:
@@ -154,88 +76,34 @@ scenarios:
         base: block_2
         face: top
         gap: 0.0
-        tangential_offset:
-          - 0.0
-          - 0.0
-        size:
-          - 0.9
-          - 0.6
-          - 0.6
+        tangential_offset: [0.0, 0.0]
+        size: [0.9, 0.6, 0.6]
       goal_normals:
-        -
-          - 0.0
-          - 0.0
-          - 1.0
-      approach_direction:
-        - 0.0
-        - 0.0
-        - -1.0
+        - [0.0, 0.0, 1.0]
+      approach_direction: [0.0, 0.0, -1.0]
+
   step_04_between_two_blocks:
     blocks:
-      -
-        id: table
-        size:
-          - 4.0
-          - 4.0
-          - 0.1
-        position:
-          - 0.0
-          - 0.0
-          - 0.05
-      -
-        id: left_block
-        size:
-          - 0.9
-          - 0.6
-          - 0.6
-        position:
-          - -0.9
-          - 0.0
-          - 0.4
-      -
-        id: right_block
-        size:
-          - 0.9
-          - 0.6
-          - 0.6
-        position:
-          - 0.9
-          - 0.0
-          - 0.4
+      - id: table
+        size: [4.0, 4.0, 0.1]
+        position: [-10.0, 0.0, 2.05]
+      - id: left_block
+        size: [0.9, 0.6, 0.6]
+        position: [-10.9, 0.0, 2.4]
+      - id: right_block
+        size: [0.9, 0.6, 0.6]
+        position: [-9.1, 0.0, 2.4]
     moving_block:
-      size:
-        - 0.9
-        - 0.6
-        - 0.6
-      start:
-        - 0.0
-        - 0.0
-        - 1.3
+      size: [0.9, 0.6, 0.6]
+      start: [-10.0, 0.0, 3.3]
       start_yaw_deg: 0.0
       goal_yaw_deg: 0.0
       goal:
         type: between
-        ids:
-          - left_block
-          - right_block
-        position:
-          - null
-          - null
-          - 0.4
+        ids: [left_block, right_block]
+        position: [null, null, 2.4]
       goal_normals:
-        -
-          - 1.0
-          - 0.0
-          - 0.0
-        -
-          - -1.0
-          - 0.0
-          - 0.0
-        -
-          - 0.0
-          - 0.0
-          - 1.0
-      approach_direction:
-        - 0.0
-        - 0.0
-        - -1.0
+        - [1.0, 0.0, 0.0]
+        - [-1.0, 0.0, 0.0]
+        - [0.0, 0.0, 1.0]
+      approach_direction: [0.0, 0.0, -1.0]

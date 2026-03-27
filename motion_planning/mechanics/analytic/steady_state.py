@@ -163,6 +163,146 @@ class CraneSteadyState:
             self._pas_ub.append(hi)
             self._pas_q0.append(0.5 * (lo + hi) if (np.isfinite(lo) and np.isfinite(hi)) else 0.0)
 
+        # ---- Pre-compute mass parameters for analytic equilibrium --------
+        # Port of timber comp_equilibrium.hpp — needs masses and COM of
+        # bodies at theta6, theta7, theta8 joints plus link lengths a6, d8.
+        self._eq_params = self._extract_equilibrium_params()
+
+    def _extract_equilibrium_params(self) -> dict[str, float]:
+        """Extract mass/COM/link params from pinocchio for analytic equilibrium."""
+        model = self._pin_model
+        # Joint IDs for the wrist chain
+        j6_id = int(model.getJointId("theta6_tip_joint"))
+        j7_id = int(model.getJointId("theta7_tilt_joint"))
+        j8_id = int(model.getJointId("theta8_rotator_joint"))
+        i6 = model.inertias[j6_id]
+        i7 = model.inertias[j7_id]
+        i8 = model.inertias[j8_id]
+        # a6: K5→K6 offset (from frame placement)
+        data = model.createData()
+        q_zero = pin.neutral(model)
+        pin.forwardKinematics(model, data, q_zero)
+        pin.updateFramePlacements(model, data)
+        k5_fid = model.getFrameId("K5_inner_telescope")
+        k6_fid = model.getFrameId("K6_double_joint_link")
+        k8_fid = model.getFrameId("K8_tool_center_point")
+        k5_pos = data.oMf[k5_fid].translation
+        k6_pos = data.oMf[k6_fid].translation
+        k8_pos = data.oMf[k8_fid].translation
+        a6 = float(np.linalg.norm(k6_pos - k5_pos))
+        # d8: distance from K7/K6 to K8 along the rotator axis (at zero config)
+        d8 = float(np.linalg.norm(k8_pos - k6_pos))
+        return {
+            "m6": float(i6.mass), "s6x": float(i6.lever[0]), "s6y": float(i6.lever[1]), "s6z": float(i6.lever[2]),
+            "m7": float(i7.mass), "s7x": float(i7.lever[0]), "s7y": float(i7.lever[1]), "s7z": float(i7.lever[2]),
+            "m8": float(i8.mass), "s8x": float(i8.lever[0]), "s8y": float(i8.lever[1]), "s8z": float(i8.lever[2]),
+            "a6": a6, "d8": d8,
+        }
+
+    def analytic_equilibrium(
+        self,
+        theta2: float,
+        theta3: float,
+        theta8: float,
+    ) -> tuple[float, float]:
+        """Analytic passive-joint equilibrium (ported from timber comp_equilibrium).
+
+        Given actuated arm joints, returns (theta6, theta7) at static
+        equilibrium under gravity.  This is a closed-form formula using
+        mass/COM parameters extracted from the pinocchio model.
+
+        Parameters
+        ----------
+        theta2, theta3, theta8 : float
+            Actuated joint positions.
+
+        Returns
+        -------
+        (theta6, theta7) : tuple[float, float]
+        """
+        p = self._eq_params
+        m6, m7, m8 = p["m6"], p["m7"], p["m8"]
+        s6x, s6z = p["s6x"], p["s6z"]
+        s7x, s7y, s7z = p["s7x"], p["s7y"], p["s7z"]
+        s8x, s8y, s8z = p["s8x"], p["s8y"], p["s8z"]
+        a6, d8 = p["a6"], p["d8"]
+
+        # theta7: gravity balance of K7+K8 pendulum (independent of theta2/theta3)
+        theta7 = -np.arctan2(
+            d8 * m8 + s7z * m7 + s8z * m8,
+            np.cos(theta8) * m8 * s8x - np.sin(theta8) * m8 * s8y + m7 * s7x,
+        ) + np.pi
+
+        # theta6: gravity balance of K6+K7+K8 assembly
+        c2, s2 = np.cos(theta2), np.sin(theta2)
+        c3, s3 = np.cos(theta3), np.sin(theta3)
+        c7, s7 = np.cos(theta7), np.sin(theta7)
+        c8, s8 = np.cos(theta8), np.sin(theta8)
+
+        t3 = s2 * c3
+        t14 = s3 * c2
+        t17 = s3 * s2
+        t32 = c2 * c3
+
+        t6 = s8y * m8 * c8
+        t10 = s8x * m8 * s8
+        t20 = m8 * d8 * s7
+        t23 = s7z * m7 * s7
+        t26 = s8z * m8 * s7
+        t30 = s7x * m7 * c7
+        t39 = s8x * m8 * c7
+        t42 = s8y * m8 * s8
+
+        num_a = (t42 * c7 * t32 - t39 * c8 * t32 - t10 * t14 - t10 * t3
+                 - t6 * t14 - t20 * t17 - t23 * t17 - t26 * t17
+                 + t30 * t17 + t20 * t32 + t23 * t32 + t26 * t32
+                 - t6 * t3 - t30 * t32)
+
+        t49 = a6 * m6
+        t51 = a6 * m7
+        t53 = m8 * a6
+        t55 = m6 * s6x
+        t57 = m6 * s6z
+        t59 = s7y * m7
+
+        num_b = (-t42 * c7 * t17 + t39 * c8 * t17 + t57 * t14 - t59 * t14
+                 + t49 * t17 + t51 * t17 + t53 * t17 + t55 * t17
+                 + t57 * t3 - t59 * t3 - t49 * t32 - t51 * t32
+                 - t53 * t32 - t55 * t32)
+
+        t70_c12 = m8 * c2
+        t71 = s8y * t70_c12
+        t74_s12 = m8 * s2
+        t75 = s8y * t74_s12
+        t78 = s8x * t70_c12
+        t81 = s8x * t74_s12
+        t84 = m7 * s2
+        t88 = m7 * c2
+        t91 = c3 * s7
+        t99 = s3 * s7
+        t107 = c7 * c8
+        t113 = c7 * s8
+
+        den_a = (m8 * d8 * c2 * t99 + m8 * d8 * s2 * t91
+                 - s7x * t84 * c3 * c7 - s7x * t88 * s3 * c7
+                 + s7z * t84 * t91 + s7z * t88 * t99
+                 + s8z * t70_c12 * t99 + s8z * t74_s12 * t91
+                 - t81 * c3 * t107 + t71 * c3 * c8 + t78 * c3 * s8
+                 - t78 * s3 * t107 - t75 * s3 * c8 - t81 * s3 * s8)
+
+        den_b = (t75 * c3 * t113 + t71 * s3 * t113
+                 - t49 * t14 - t51 * t14 - t53 * t14 - t55 * t14
+                 + t57 * t17 - t59 * t17 - t49 * t3 - t51 * t3
+                 - t53 * t3 - t55 * t3 - t57 * t32 + t59 * t32)
+
+        denom = den_a + den_b
+        if abs(denom) < 1e-15:
+            theta6 = 0.0
+        else:
+            theta6 = float(np.arctan((num_a + num_b) / denom))
+
+        return float(theta6), float(theta7)
+
     # ------------------------------------------------------------------ #
     # Constructor helpers
     # ------------------------------------------------------------------ #
@@ -230,7 +370,35 @@ class CraneSteadyState:
         T_target = _pose_from_pos_yaw(p, float(target_yaw))
 
         q_seed_map = dict(q_seed or {})
-        q_p_eq = {jn: float(q_seed_map.get(jn, self._pas_q0[i])) for i, jn in enumerate(self._pas_names)}
+
+        # Auto-seed theta1 and theta8 if not provided.
+        # theta8 formula derived from empirical FK relationship:
+        #   phi_fk ≈ π/2 + theta1 + 0.4192 * theta8  (at theta7 ≈ π/2 equilibrium)
+        _THETA8_GAIN = 0.4192
+        if "theta1_slewing_joint" not in q_seed_map:
+            theta1_guess = float(np.arctan2(float(p[1]), float(p[0])))
+            q_seed_map["theta1_slewing_joint"] = theta1_guess
+        if "theta8_rotator_joint" not in q_seed_map:
+            theta1_for_t8 = float(q_seed_map["theta1_slewing_joint"])
+            theta8_guess = float((float(target_yaw) - np.pi / 2.0 - theta1_for_t8) / _THETA8_GAIN)
+            q_seed_map["theta8_rotator_joint"] = float(np.clip(theta8_guess, -1.01, 1.01))
+
+        # Use analytic equilibrium (ported from timber comp_equilibrium) as
+        # initial passive joint estimate — much better than midrange defaults.
+        _theta2_seed = float(q_seed_map.get("theta2_boom_joint", 0.0))
+        _theta3_seed = float(q_seed_map.get("theta3_arm_joint", 0.0))
+        _theta8_seed = float(q_seed_map.get("theta8_rotator_joint", 0.0))
+        _eq6, _eq7 = self.analytic_equilibrium(_theta2_seed, _theta3_seed, _theta8_seed)
+        _eq_seed = {"theta6_tip_joint": _eq6, "theta7_tilt_joint": _eq7}
+
+        q_p_eq = {}
+        for i, jn in enumerate(self._pas_names):
+            if jn in q_seed_map:
+                q_p_eq[jn] = float(q_seed_map[jn])
+            elif jn in _eq_seed:
+                q_p_eq[jn] = float(_eq_seed[jn])
+            else:
+                q_p_eq[jn] = float(self._pas_q0[i])
         residual = float("inf")
         ik_res = None
         converged = False

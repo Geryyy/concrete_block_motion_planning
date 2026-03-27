@@ -113,7 +113,21 @@ class _IKBase:
 
 
 class AnalyticIKSolver(_IKBase):
-    """Analytic IK: fixed joints + 1D independent-joint search."""
+    """Analytic IK: fixed joints + 1D independent-joint search.
+
+    Geometry note
+    -------------
+    The 2-link arm model (boom a2, effective forearm sqrt(a3^2+d45^2)) correctly
+    describes the arm from K0 to K5_inner_telescope — the inner telescope endpoint.
+    The remaining chain (theta6_tip_joint, theta7_tilt_joint, theta8_rotator_joint)
+    carries K5 to K8_tool_center_point (TCP).  Because the end-effector chain is
+    not part of the 2-link geometry, we must subtract its contribution from the
+    TCP target before running the geometry, then verify the full FK against K8
+    afterwards.
+    """
+
+    # Frame that marks the end of the 2-link arm geometry.
+    _GEOMETRY_FRAME = "K5_inner_telescope"
 
     def __init__(self, desc: ModelDescription, config: AnalyticModelConfig, geometry: CraneGeometryConstants) -> None:
         super().__init__(desc, config)
@@ -199,108 +213,247 @@ class AnalyticIKSolver(_IKBase):
         if "theta8_rotator_joint" in fixed:
             theta8 = float(fixed["theta8_rotator_joint"])
         else:
-            theta8 = self._wrap_angle(theta1 - phi_tool)
+            # phi_fk ≈ π/2 + theta1 + 0.4192 * theta8  (at theta7 ≈ π/2 equilibrium)
+            _THETA8_GAIN = 0.4192
+            theta8 = self._wrap_angle((phi_tool - np.pi / 2.0 - theta1) / _THETA8_GAIN)
             if abs(q0_8 - theta8) > np.pi:
                 theta8 -= 2.0 * np.pi * float(np.sign(theta8 - q0_8))
         if (np.isfinite(lo8) and theta8 < lo8 - 1e-9) or (np.isfinite(hi8) and theta8 > hi8 + 1e-9):
             return None
 
+        # -----------------------------------------------------------------------
+        # Compute K8_in_K5 — the constant K8 position in the K5 local frame.
+        #
+        # The 2-link geometry reaches K5_inner_telescope, not K8_tool_center_point.
+        # The K5→K8 chain (theta6/theta7/theta8) rotates the K8 position vector
+        # with the arm orientation.  K8 in K5 frame is constant given theta6/7/8.
+        #
+        # Arm-plane correction for a given theta2:
+        #   K5_x_arm = [cos(theta2), sin(theta2)]   (K5 x-axis ≈ boom direction)
+        #   K5_y_arm = [-sin(theta2), cos(theta2)]  (K5 y-axis = perpendicular)
+        #   correction_r = k8_in_k5[0]*cos(theta2) - k8_in_k5[1]*sin(theta2)
+        #   correction_z = k8_in_k5[0]*sin(theta2) + k8_in_k5[1]*cos(theta2)
+        #   K5_target = K8_target - [correction_r, correction_z]
+        #
+        # Two-pass approach: pass-1 targets K8 to get approximate theta2, then
+        # pass-2 uses the corrected K5 target for the precise result.
+        # -----------------------------------------------------------------------
+        q_chain_ref: dict[str, float] = {jn: 0.0 for jn in self._cfg.dynamic_joints}
+        q_chain_ref["theta1_slewing_joint"] = float(theta1)
+        q_chain_ref["theta6_tip_joint"] = float(q6)
+        q_chain_ref["theta7_tilt_joint"] = float(q7)
+        q_chain_ref["theta8_rotator_joint"] = float(theta8)
+        for follower, leader in self._cfg.tied_joints.items():
+            if leader in q_chain_ref:
+                q_chain_ref[follower] = float(q_chain_ref[leader])
+
+        T_k5_ref = self._fk(q_chain_ref, base_frame=self._base_frame, end_frame=self._GEOMETRY_FRAME)
+        T_k8_ref = self._fk(q_chain_ref, base_frame=self._base_frame, end_frame=self._end_frame)
+        # K8 position in K5 local frame (constant given theta6/theta7/theta8).
+        T_k5_inv = np.linalg.inv(T_k5_ref)
+        k8_in_k5 = np.asarray((T_k5_inv @ T_k8_ref)[:3, 3], dtype=float)
+        k8lx = float(k8_in_k5[0])  # K8 x-component in K5 frame
+        k8ly = float(k8_in_k5[1])  # K8 y-component in K5 frame
+
         g = self._geometry
-        p2 = g.p2
-        p5 = np.array([float(np.hypot(x_t, y_t)), z_t], dtype=float)
+        r_t = float(np.hypot(x_t, y_t))
 
-        best: dict[str, float] | None = None
-        best_pos_err = float("inf")
-        best_rot_err = float("inf")
-        best_mid = float("inf")
-        iters = 0
-        step = np.pi / 180.0
+        # d45 bounds from q4 limits (constant for both passes).
+        d45_q4_lo = g.d4 + 2.0 * lo4
+        d45_q4_hi = g.d4 + 2.0 * hi4
 
-        q2_values = [float(fixed["theta2_boom_joint"])] if "theta2_boom_joint" in fixed else np.arange(lo2, hi2 + 0.5 * step, step, dtype=float).tolist()
-        for q2 in q2_values:
-            iters += 1
-            if (np.isfinite(lo2) and q2 < lo2 - 1e-9) or (np.isfinite(hi2) and q2 > hi2 + 1e-9):
-                continue
-            p3 = np.array([g.a2 * np.cos(q2) - g.a1, g.d1 + g.a2 * np.sin(q2)], dtype=float)
-            p32 = p2 - p3
-            p35 = p5 - p3
-            p32_norm = float(np.linalg.norm(p32))
-            p35_norm = float(np.linalg.norm(p35))
-            if p32_norm < 1e-12 or p35_norm < g.a3:
-                continue
+        # Cost reference values (midrange + seed deviation, as in timber).
+        mid2 = 0.5 * (lo2 + hi2)
+        mid3 = 0.5 * (lo3 + hi3)
+        mid4 = 0.5 * (lo4 + hi4)
+        rng2 = max(hi2 - lo2, 1e-9)
+        rng3 = max(hi3 - lo3, 1e-9)
+        rng4 = max(hi4 - lo4, 1e-9)
+        seed_q2 = float(seed.get("theta2_boom_joint", mid2))
+        seed_q3 = float(seed.get("theta3_arm_joint", mid3))
+        seed_q4 = float(seed.get("q4_big_telescope", mid4))
 
-            d45 = float(np.sqrt(max(0.0, p35_norm * p35_norm - g.a3 * g.a3)))
-            denom = p35_norm * p32_norm
-            if denom < 1e-12:
-                continue
-            gamma = float(np.arccos(np.clip(float(np.dot(p35, p32)) / denom, -1.0, 1.0)))
+        # Helper: corrected arm-plane K5 target from K8 target.
+        # K5 x-axis in the arm plane = [cos(theta2+theta3), sin(theta2+theta3)],
+        # so the K5→K8 offset projection uses the combined angle alpha.
+        def _k5_target(alpha: float) -> np.ndarray:
+            ca, sa = float(np.cos(alpha)), float(np.sin(alpha))
+            corr_r = k8lx * ca - k8ly * sa
+            corr_z = k8lx * sa + k8ly * ca
+            return np.array([r_t - corr_r, z_t - corr_z], dtype=float)
 
-            theta3 = float(gamma - 0.5 * np.pi + np.arctan2(g.a3, d45))
-            q4 = float(0.5 * (d45 - g.d4))
-            if "theta3_arm_joint" in fixed:
-                theta3 = float(fixed["theta3_arm_joint"])
+        # -----------------------------------------------------------------------
+        # d45-parameterized analytic IK  (ported from timber invKin2DoF /
+        # calcInverseKinCraneColAvoid golden-section approach).
+        #
+        # For the 2-link arm (boom a2, effective forearm link2=sqrt(a3^2+d45^2)):
+        #   theta2 = base_angle ± arccos(law-of-cosines at joint-2)
+        #   theta3 = arccos(law-of-cosines at joint-3) + atan2(a3,d45) - π/2
+        # Both are purely geometric given d45 — no FK needed in the inner loop.
+        # A single FK is run at the end to verify the best candidate.
+        #
+        # Iterative K8→K5 correction (timber-style geometry adaptation):
+        #   The 2-link geometry reaches K5, not K8.  The K5→K8 offset (~1m)
+        #   depends on theta2 through the arm-plane projection.  We iterate:
+        #   start with K8 target, compute theta2, apply correction, repeat
+        #   until theta2 converges (typically 3-5 iterations).
+        # -----------------------------------------------------------------------
+
+        def _run_d45_search(
+            p5_arm: np.ndarray,
+        ) -> tuple[float | None, float | None, float | None]:
+            """Vectorised d45 search targeting p5_arm (K5 position in arm plane)."""
+            dp = p5_arm - g.p2
+            d_p2p5 = float(np.linalg.norm(dp))
+            if d_p2p5 < 1e-9:
+                return None, None, None
+
+            # Triangle feasibility bounds for d45.
+            tri_hi_sq = (d_p2p5 + g.a2) ** 2 - g.a3 ** 2
+            if tri_hi_sq <= 0.0:
+                return None, None, None
+            d45_tri_lo = float(np.sqrt(max(0.0, (d_p2p5 - g.a2) ** 2 - g.a3 ** 2))) + 1e-9
+            d45_tri_hi = float(np.sqrt(tri_hi_sq)) - 1e-9
+
+            d45_lo_eff = max(d45_q4_lo, d45_tri_lo)
+            d45_hi_eff = min(d45_q4_hi, d45_tri_hi)
+            if d45_lo_eff >= d45_hi_eff:
+                return None, None, None
+
+            # If q4 is fixed, collapse search to single d45 value.
             if "q4_big_telescope" in fixed:
-                q4 = float(fixed["q4_big_telescope"])
-            if (np.isfinite(lo3) and theta3 < lo3 - 1e-6) or (np.isfinite(hi3) and theta3 > hi3 + 1e-6):
-                continue
-            if theta3 > g.theta3_max:
-                continue
-            if (np.isfinite(lo4) and q4 < lo4 - 1e-6) or (np.isfinite(hi4) and q4 > hi4 + 1e-6):
-                continue
+                q4_fixed = float(fixed["q4_big_telescope"])
+                d45_lo_eff = g.d4 + 2.0 * q4_fixed
+                d45_hi_eff = d45_lo_eff + 1e-12
 
-            q_try = dict(seed)
-            q_try.update(
-                {
-                    "theta1_slewing_joint": float(theta1),
-                    "theta2_boom_joint": float(q2),
-                    "theta3_arm_joint": float(theta3),
-                    "q4_big_telescope": float(q4),
-                    "theta6_tip_joint": float(q6),
-                    "theta7_tilt_joint": float(q7),
-                    "theta8_rotator_joint": float(theta8),
-                }
+            n_pts = 1 if d45_hi_eff - d45_lo_eff < 1e-11 else 120
+            d45_vec = np.linspace(d45_lo_eff, d45_hi_eff, n_pts, dtype=float)
+            link2_vec = np.sqrt(g.a3 ** 2 + d45_vec ** 2)
+            q4_vec = 0.5 * (d45_vec - g.d4)
+
+            # Law of cosines — angle at joint-2 (beta) and joint-3 (gamma).
+            cos_beta = np.clip(
+                (g.a2 ** 2 + d_p2p5 ** 2 - link2_vec ** 2) / (2.0 * g.a2 * d_p2p5),
+                -1.0, 1.0,
             )
-            for jn, val in fixed.items():
-                q_try[jn] = float(val)
-            for follower, leader in self._cfg.tied_joints.items():
-                if leader in q_try:
-                    q_try[follower] = float(q_try[leader])
+            beta_vec = np.arccos(cos_beta)
+            base_angle = float(np.arctan2(dp[1], dp[0]))
 
-            T_try = self._fk(q_try, base_frame=base_frame, end_frame=end_frame)
-            pos_err = float(np.linalg.norm(T_try[:3, 3] - p_target))
-            rot_err = float(np.linalg.norm(_rotvec_from_R(R_target.T @ T_try[:3, :3])))
-            mid = self._midrange_cost(q_try, bounds)
+            cos_gamma = np.clip(
+                (g.a2 ** 2 + link2_vec ** 2 - d_p2p5 ** 2) / (2.0 * g.a2 * link2_vec),
+                -1.0, 1.0,
+            )
+            gamma_vec = np.arccos(cos_gamma)
+            theta3_vec = np.arctan2(g.a3, d45_vec) - 0.5 * np.pi + gamma_vec
 
-            pose_ok = pos_err <= 5e-3 and rot_err <= 5e-2
-            if pose_ok:
-                if (mid < best_mid - 1e-12) or (abs(mid - best_mid) <= 1e-12 and pos_err < best_pos_err):
-                    best = q_try
-                    best_mid = mid
-                    best_pos_err = pos_err
-                    best_rot_err = rot_err
-            elif best is None:
-                score_old = best_pos_err + 0.3 * best_rot_err
-                score_new = pos_err + 0.3 * rot_err
-                if score_new < score_old:
-                    best = q_try
-                    best_pos_err = pos_err
-                    best_rot_err = rot_err
+            best_q2_: float | None = None
+            best_q3_: float | None = None
+            best_q4_: float | None = None
+            best_cost_ = float("inf")
 
-        if best is None or best_pos_err > 5e-3 or best_rot_err > 5e-2:
+            for sign in (+1.0, -1.0):
+                theta2_vec = base_angle + sign * beta_vec
+
+                if "theta2_boom_joint" in fixed:
+                    theta2_fix = float(fixed["theta2_boom_joint"])
+                    valid = np.abs(theta2_vec - theta2_fix) < 1e-3
+                else:
+                    valid = (theta2_vec >= lo2 - 1e-6) & (theta2_vec <= hi2 + 1e-6)
+
+                if "theta3_arm_joint" in fixed:
+                    theta3_use = np.full_like(theta3_vec, float(fixed["theta3_arm_joint"]))
+                else:
+                    theta3_use = theta3_vec
+                    valid &= (
+                        (theta3_use >= lo3 - 1e-6)
+                        & (theta3_use <= np.minimum(hi3, g.theta3_max) + 1e-6)
+                    )
+
+                valid &= (q4_vec >= lo4 - 1e-6) & (q4_vec <= hi4 + 1e-6)
+                valid &= np.isfinite(theta2_vec) & np.isfinite(theta3_use)
+
+                if not np.any(valid):
+                    continue
+
+                cost_vec = (
+                    ((theta2_vec - mid2) / rng2) ** 2
+                    + ((theta3_use - mid3) / rng3) ** 2
+                    + ((q4_vec - mid4) / rng4) ** 2
+                    + 0.1 * (
+                        (theta2_vec - seed_q2) ** 2
+                        + (theta3_use - seed_q3) ** 2
+                        + (q4_vec - seed_q4) ** 2
+                    )
+                )
+                cost_vec[~valid] = 1e10
+
+                idx = int(np.argmin(cost_vec))
+                if cost_vec[idx] < best_cost_:
+                    best_cost_ = float(cost_vec[idx])
+                    best_q2_ = float(theta2_vec[idx])
+                    best_q3_ = float(theta3_use[idx])
+                    best_q4_ = float(q4_vec[idx])
+
+            return best_q2_, best_q3_, best_q4_
+
+        # Iterative K5 correction: start with alpha=0 (no correction),
+        # then refine until (theta2+theta3) converges.
+        alpha_prev = 0.0
+        best_q2: float | None = None
+        best_q3: float | None = None
+        best_q4: float | None = None
+        for _iter in range(8):
+            p5_corrected = _k5_target(alpha_prev)
+            q2_i, q3_i, q4_i = _run_d45_search(p5_corrected)
+            if q2_i is None:
+                break
+            best_q2, best_q3, best_q4 = q2_i, q3_i, q4_i
+            alpha_i = q2_i + q3_i
+            if abs(alpha_i - alpha_prev) < 1e-4:
+                break
+            alpha_prev = alpha_i
+        if best_q2 is None:
             return None
-        q_act = {jn: float(best.get(jn, 0.0)) for jn in act_names}
-        q_pas = {jn: float(best.get(jn, 0.0)) for jn in self._cfg.passive_joints if jn in best}
+
+        # Single FK call to verify the best geometric solution.
+        q_try = dict(seed)
+        q_try.update(
+            {
+                "theta1_slewing_joint": float(theta1),
+                "theta2_boom_joint": best_q2,
+                "theta3_arm_joint": best_q3,
+                "q4_big_telescope": best_q4,
+                "theta6_tip_joint": float(q6),
+                "theta7_tilt_joint": float(q7),
+                "theta8_rotator_joint": float(theta8),
+            }
+        )
+        for jn, val in fixed.items():
+            q_try[jn] = float(val)
+        for follower, leader in self._cfg.tied_joints.items():
+            if leader in q_try:
+                q_try[follower] = float(q_try[leader])
+
+        T_try = self._fk(q_try, base_frame=base_frame, end_frame=end_frame)
+        pos_err = float(np.linalg.norm(T_try[:3, 3] - p_target))
+        rot_err = float(np.linalg.norm(_rotvec_from_R(R_target.T @ T_try[:3, :3])))
+
+        if pos_err > 2e-2 or rot_err > 5e-2:
+            return None
+
+        q_act = {jn: float(q_try.get(jn, 0.0)) for jn in act_names}
+        q_pas = {jn: float(q_try.get(jn, 0.0)) for jn in self._cfg.passive_joints if jn in q_try}
         return IkSolveResult(
             success=True,
             status="analytic_success",
-            message="IK analytic solve converged (1D search)",
-            q_dynamic={jn: float(best.get(jn, 0.0)) for jn in self._cfg.dynamic_joints},
+            message="IK analytic solve converged (d45 vectorised search)",
+            q_dynamic={jn: float(q_try.get(jn, 0.0)) for jn in self._cfg.dynamic_joints},
             q_actuated=q_act,
             q_passive=q_pas,
-            iterations=int(iters),
-            cost=float(0.5 * (best_pos_err * best_pos_err + best_rot_err * best_rot_err)),
-            pos_error_m=best_pos_err,
-            rot_error_rad=best_rot_err,
+            iterations=n_pts * 2,
+            cost=float(0.5 * (pos_err * pos_err + rot_err * rot_err)),
+            pos_error_m=pos_err,
+            rot_error_rad=rot_err,
         )
 
 

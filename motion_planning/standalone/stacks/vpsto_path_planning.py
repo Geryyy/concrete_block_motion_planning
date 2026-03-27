@@ -49,11 +49,19 @@ def plan_vpsto_path_planning(scenario: StandaloneScenario) -> StandalonePlanResu
         scenario.goal_yaw_rad,
     ], dtype=float)
 
+    # Use validated goal joint config when available — bypasses the K5→K8
+    # offset error in compute_dependent_joints() (CBS arm offset ~1 m)
+    q_goal = (
+        np.asarray(scenario.planner_goal_q, dtype=float)
+        if scenario.planner_goal_q is not None
+        else None
+    )
+
     # ---- Run VP-STO ----
     model = CraneVpstoModel(n_eval=20)
     solver = VpstoSolver(model, n_via=5, n_eval=20, n_samples=32)
 
-    vpsto_result = solver.solve(q_start, yd)
+    vpsto_result = solver.solve(q_start, yd, q_goal=q_goal)
     if not vpsto_result.success:
         return _fail("VP-STO failed to find feasible path", act_names)
 

@@ -212,13 +212,57 @@ class VpstoSolver:
         self.S_chol = np.linalg.cholesky(S)
         self.ddPhi_b = ddPhi_b
 
-    def solve(self, q0: np.ndarray, yd: np.ndarray) -> VpstoResult:
+    def _make_via_prior(
+        self, q0: np.ndarray, qd: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Compute prior mean and Cholesky for via-point-only search.
+
+        Used when the full goal joint config ``qd`` is known in advance,
+        so CMA-ES only optimises the interior via-points (not the terminal
+        theta2).  Returns (mu_p, S_chol) with search dimension
+        ``(n_via - 2) * ndof``.
+        """
+        ndof = self.ndof
+        n_via = self.n_via
+        n_via_cols = (n_via - 2) * ndof
+        qd_col_start = ndof + n_via_cols
+
+        # Optimized columns: interior via-points only
+        ddPhi_p = self.ddPhi[:, ndof:ndof + n_via_cols]
+
+        # Boundary columns: q0 + all qd + dq0=0 + dqd=0
+        ddPhi_b = np.zeros((self.ddPhi.shape[0], 4 * ndof), dtype=float)
+        ddPhi_b[:, :ndof] = self.ddPhi[:, :ndof]
+        ddPhi_b[:, ndof:2 * ndof] = self.ddPhi[:, qd_col_start:qd_col_start + ndof]
+        ddPhi_b[:, 2 * ndof:] = self.ddPhi[:, -2 * ndof:]
+
+        base = np.zeros(4 * ndof, dtype=float)
+        base[:ndof] = q0
+        base[ndof:2 * ndof] = qd
+        # dq0 = dqd = 0 (already)
+
+        S = np.linalg.inv(ddPhi_p.T @ ddPhi_p / self.n_eval)
+        ddPhi_p_pinv = S @ ddPhi_p.T / self.n_eval
+        S_chol = np.linalg.cholesky(S)
+        mu_p = -ddPhi_p_pinv @ ddPhi_b @ base
+        return mu_p, S_chol
+
+    def solve(
+        self,
+        q0: np.ndarray,
+        yd: np.ndarray,
+        q_goal: np.ndarray | None = None,
+    ) -> VpstoResult:
         """Run VP-STO optimization.
 
         Parameters
         ----------
         q0 : initial actuated joint config (ndof,)
         yd : target [x, y, z, yaw] (4,)
+        q_goal : optional validated goal joint config (ndof,).  When provided
+            the full goal config is fixed and CMA-ES only optimises interior
+            via-points, bypassing the geometric goal computation.  This avoids
+            the CBS K5→K8 offset error in ``compute_dependent_joints``.
 
         Returns
         -------
@@ -232,76 +276,80 @@ class VpstoSolver:
         q0 = np.asarray(q0, dtype=float).ravel()
         yd = np.asarray(yd, dtype=float).ravel()
 
-        self.model.set_yd(yd)
-        qF = self.model.compute_fixed_joints(q0, yd)
-
-        # Store for cost evaluation
+        # Pre-compute boundary contributions (q0 part, same regardless of mode)
         self._q0 = q0.copy()
-        self._qF = qF.copy()
-        self._yd = yd.copy()
-
-        # Boundary vector for prior computation
-        base = np.zeros(q0.size + qF.size + 2 * self.ndof, dtype=float)
-        base[:q0.size] = q0
-        base[q0.size:q0.size + qF.size] = qF
-        # dq0 = 0, dqd = 0  (already zeros)
-
-        mu_p = -self.ddPhi_p_pinv @ self.ddPhi_b @ base
-        self._mu_p = mu_p
-
-        # Pre-compute boundary contributions
         self._q_boundary = self.Phi[:, :self.ndof] @ q0
         self._qp_boundary = self.dPhi[:, :self.ndof] @ q0
         self._qpp_boundary = self.ddPhi[:, :self.ndof] @ q0
 
-        # CMA-ES optimization
-        N = (self.n_via - 2) * self.ndof + len(self.indep_idx)
-        x0 = np.zeros(N, dtype=float)
+        if q_goal is not None:
+            # --- Fixed-goal mode: bypass geometry, optimise via-points only ---
+            qd = np.asarray(q_goal, dtype=float).ravel()
+            mu_p, S_chol_run = self._make_via_prior(q0, qd)
+            N = (self.n_via - 2) * self.ndof
+            self._mu_p = mu_p
+            self._qd_fixed = qd
+        else:
+            # --- Original mode: geometry-based goal, optimise theta2 + via-pts ---
+            self.model.set_yd(yd)
+            qF = self.model.compute_fixed_joints(q0, yd)
+            self._qF = qF.copy()
+            self._yd = yd.copy()
+            self._qd_fixed = None
 
+            base = np.zeros(q0.size + qF.size + 2 * self.ndof, dtype=float)
+            base[:q0.size] = q0
+            base[q0.size:q0.size + qF.size] = qF
+            self._mu_p = -self.ddPhi_p_pinv @ self.ddPhi_b @ base
+            N = (self.n_via - 2) * self.ndof + len(self.indep_idx)
+            S_chol_run = self.S_chol
+
+        x0 = np.zeros(N, dtype=float)
         opts = cma.CMAOptions()
         opts["popsize"] = self.n_samples
         opts["tolfunhist"] = self.cma_tol_fun_hist
-        opts["verbose"] = -9  # suppress output
+        opts["verbose"] = -9
         opts["seed"] = 42
 
+        self._S_chol_run = S_chol_run
         es = cma.CMAEvolutionStrategy(x0, self.sigma_init, opts)
         while not es.stop():
             solutions = es.ask()
             costs = [self._comp_cost(np.asarray(x, dtype=float)) for x in solutions]
             es.tell(solutions, costs)
 
-        # Extract best solution
         x_best = np.asarray(es.result.xbest, dtype=float)
-        x_vec = self._mu_p + self.S_chol @ x_best
+        x_vec = self._mu_p + S_chol_run @ x_best
 
-        n_via_weights = (self.n_via - 2) * self.ndof
-        q_via = x_vec[:n_via_weights]
-        q_indep = x_vec[n_via_weights:]
+        if q_goal is not None:
+            # Fixed-goal: x_vec is purely via-point weights
+            q_via = x_vec
+            qd = self._qd_fixed
+        else:
+            # Original: extract via-points and terminal theta2
+            n_via_weights = (self.n_via - 2) * self.ndof
+            q_via = x_vec[:n_via_weights]
+            q_indep = x_vec[n_via_weights:]
 
-        # Compute dependent joints at goal
-        qD, dep_cost = self.model.compute_dependent_joints(yd, qF, q_indep)
-        if dep_cost > 0:
-            return VpstoResult(
-                success=False, q_via=q_via, q_goal=np.zeros(self.ndof),
-                T=0.0, cost=float("inf"), iterations=es.result.iterations,
-                q_traj=np.empty((0, self.ndof)), dq_traj=np.empty((0, self.ndof)),
-                t_traj=np.empty(0),
-            )
+            qD, dep_cost = self.model.compute_dependent_joints(yd, self._qF, q_indep)
+            if dep_cost > 0:
+                return VpstoResult(
+                    success=False, q_via=q_via, q_goal=np.zeros(self.ndof),
+                    T=0.0, cost=float("inf"), iterations=es.result.iterations,
+                    q_traj=np.empty((0, self.ndof)), dq_traj=np.empty((0, self.ndof)),
+                    t_traj=np.empty(0),
+                )
+            qd = np.zeros(self.ndof, dtype=float)
+            for i, fi in enumerate(self.fixed_idx):
+                qd[fi] = self._qF[i]
+            for i, ii in enumerate(self.indep_idx):
+                qd[ii] = q_indep[i]
+            for i, di in enumerate(self.dep_idx):
+                qd[di] = qD[i]
 
-        # Assemble goal config
-        qd = np.zeros(self.ndof, dtype=float)
-        for i, fi in enumerate(self.fixed_idx):
-            qd[fi] = qF[i]
-        for i, ii in enumerate(self.indep_idx):
-            qd[ii] = q_indep[i]
-        for i, di in enumerate(self.dep_idx):
-            qd[di] = qD[i]
-
-        # Compute final time
+        # Compute final time and sample trajectory
         q_vec, qp_vec, qpp_vec = self._get_path(q_via, qd)
         T = self.model.compute_final_time(q_vec, qp_vec, qpp_vec)
-
-        # Sample trajectory at regular intervals
         dt = 0.02  # 50 Hz
         q_traj, dq_traj, t_traj = self.sample_trajectory(q_via, qd, T, dt)
 
@@ -319,29 +367,31 @@ class VpstoSolver:
 
     def _comp_cost(self, x: np.ndarray) -> float:
         """Evaluate trajectory cost for a CMA-ES sample."""
-        x_vec = self._mu_p + self.S_chol @ x
+        x_vec = self._mu_p + self._S_chol_run @ x
 
-        n_via_weights = (self.n_via - 2) * self.ndof
-        q_via = x_vec[:n_via_weights]
-        q_indep = x_vec[n_via_weights:]
+        if self._qd_fixed is not None:
+            # Fixed-goal mode: x_vec contains only via-point weights
+            q_via = x_vec
+            qd = self._qd_fixed
+        else:
+            # Original mode: via-points + terminal theta2
+            n_via_weights = (self.n_via - 2) * self.ndof
+            q_via = x_vec[:n_via_weights]
+            q_indep = x_vec[n_via_weights:]
 
-        # Compute dependent joints
-        qD, dep_cost = self.model.compute_dependent_joints(self._yd, self._qF, q_indep)
-        if dep_cost > 0:
-            return dep_cost
+            qD, dep_cost = self.model.compute_dependent_joints(self._yd, self._qF, q_indep)
+            if dep_cost > 0:
+                return dep_cost
 
-        # Assemble goal config
-        qd = np.zeros(self.ndof, dtype=float)
-        for i, fi in enumerate(self.fixed_idx):
-            qd[fi] = self._qF[i]
-        for i, ii in enumerate(self.indep_idx):
-            qd[ii] = q_indep[i]
-        for i, di in enumerate(self.dep_idx):
-            qd[di] = qD[i]
+            qd = np.zeros(self.ndof, dtype=float)
+            for i, fi in enumerate(self.fixed_idx):
+                qd[fi] = self._qF[i]
+            for i, ii in enumerate(self.indep_idx):
+                qd[ii] = q_indep[i]
+            for i, di in enumerate(self.dep_idx):
+                qd[di] = qD[i]
 
-        # Get path
         q_vec, qp_vec, qpp_vec = self._get_path(q_via, qd)
-
         return self.model.compute_trajectory_cost(q_vec, qp_vec, qpp_vec)
 
     def _get_path(

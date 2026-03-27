@@ -119,6 +119,103 @@ def _fill_info_defaults(info: Dict[str, Any], *, start_yaw_deg: float, goal_yaw_
     return out
 
 
+# CBS standalone stack names that bypass the external planner infrastructure
+_CBS_STACK_NAMES = {"vpsto_path_planning", "vpsto_ilqr"}
+
+
+def _is_cbs_stack(method: str) -> bool:
+    return method.lower().replace("-", "_") in _CBS_STACK_NAMES
+
+
+def _plan_cbs_stack(
+    method: str,
+    demo_scenario_name: str,
+) -> tuple[Callable[[np.ndarray], np.ndarray], Callable[[np.ndarray], np.ndarray], Dict[str, Any]]:
+    """Run a CBS standalone stack and return (curve_sampler, yaw_fn, info).
+
+    Looks up the best-matching CBS scenario from make_default_scenarios()
+    for the given demo scenario name, runs the CBS planner, then transforms
+    the result from K0 frame back to world frame using overlay_scene_translation.
+    """
+    from motion_planning.standalone.scenarios import make_default_scenarios
+    from motion_planning.standalone.stacks import STACK_REGISTRY
+
+    stack_name = method.lower().replace("-", "_")
+    fn = STACK_REGISTRY.get(stack_name)
+    if fn is None:
+        raise KeyError(f"CBS stack '{stack_name}' not in STACK_REGISTRY")
+
+    # Find a matching CBS scenario: prefer one with overlay_scene_name matching the
+    # demo scenario and a scene_translation (so it has planner_start_q and is reachable)
+    cbs_scenarios = make_default_scenarios()
+    cbs_scenario = None
+    k0_to_world_offset = None
+
+    for sc in cbs_scenarios.values():
+        overlay = getattr(sc, "overlay_scene_name", None)
+        if overlay == demo_scenario_name and getattr(sc, "overlay_scene_translation", None) is not None:
+            cbs_scenario = sc
+            k0_to_world_offset = np.asarray(sc.overlay_scene_translation, dtype=float)
+            break
+
+    if cbs_scenario is None:
+        # Fallback: use any CBS scenario with this overlay name
+        for sc in cbs_scenarios.values():
+            if getattr(sc, "overlay_scene_name", None) == demo_scenario_name:
+                cbs_scenario = sc
+                break
+
+    if cbs_scenario is None:
+        raise ValueError(
+            f"No CBS standalone scenario found for demo scenario '{demo_scenario_name}'. "
+            f"Available CBS scenarios: {list(cbs_scenarios.keys())}"
+        )
+
+    print(f"Using CBS scenario '{cbs_scenario.name}' for demo scene '{demo_scenario_name}'")
+    result = fn(cbs_scenario)
+    if not result.success:
+        raise RuntimeError(f"CBS stack '{stack_name}' failed: {result.message}")
+
+    print(f"CBS stack result: {result.message}")
+    if result.evaluation:
+        ev = result.evaluation
+        print(f"  final pos err: {ev.final_position_error_m * 100:.1f} cm  "
+              f"path len: {ev.path_length_m:.2f} m")
+
+    tcp_xyz_k0 = np.asarray(result.tcp_xyz, dtype=float).reshape(-1, 3)
+    tcp_yaw_rad = np.asarray(result.tcp_yaw_rad, dtype=float).ravel()
+
+    # Transform K0 → world frame: world = K0 - overlay_scene_translation
+    if k0_to_world_offset is not None:
+        tcp_xyz = tcp_xyz_k0 - k0_to_world_offset.reshape(1, 3)
+    else:
+        tcp_xyz = tcp_xyz_k0
+
+    # curve sampler: interpolate tcp_xyz at u ∈ [0, 1]
+    t = np.linspace(0.0, 1.0, tcp_xyz.shape[0])
+
+    def curve_sampler(uq: np.ndarray) -> np.ndarray:
+        u = np.asarray(uq, dtype=float).reshape(-1)
+        x = np.interp(u, t, tcp_xyz[:, 0])
+        y = np.interp(u, t, tcp_xyz[:, 1])
+        z = np.interp(u, t, tcp_xyz[:, 2])
+        return np.column_stack([x, y, z])
+
+    def yaw_fn(uq: np.ndarray) -> np.ndarray:
+        u = np.asarray(uq, dtype=float).reshape(-1)
+        yaw_deg = np.interp(u, t, np.degrees(tcp_yaw_rad))
+        return yaw_deg
+
+    info: Dict[str, Any] = {
+        "yaw_fn": yaw_fn,
+        "success": result.success,
+        "message": result.message,
+        "nit": int(result.diagnostics.get("ilqr_iterations", result.diagnostics.get("vpsto_iterations", 0))),
+        "preferred_clearance": 0.05,
+    }
+    return curve_sampler, np.empty((0, 3), dtype=float), info
+
+
 def _planner_entry(
     method: str,
     optimized_params_file: Path,
@@ -388,31 +485,36 @@ def main() -> None:
         raise ValueError(f"Unknown scenario '{args.scenario}'. Available: {available}")
 
     scenario = lib.build_scenario(args.scenario)
-    planner_method, planner_cfg, planner_options = _planner_entry(
-        method=args.planner,
-        optimized_params_file=Path(args.optimized_params_file),
-    )
 
     t_start = time.time()
-    if planner_method in {"Powell", "CEM", "Nelder-Mead"}:
-        curve_sampler, vias_opt, info = _plan_spline_method(
-            planner_method=planner_method,
-            planner_cfg=planner_cfg,
-            planner_options=planner_options,
-            scenario=scenario,
-        )
-    elif planner_method == "VP-STO":
-        curve_sampler, vias_opt, info = _plan_vpsto(
-            scenario=scenario,
-            planner_cfg=planner_cfg,
-            planner_options=planner_options,
-        )
+    if _is_cbs_stack(args.planner):
+        planner_method = args.planner.lower().replace("-", "_")
+        planner_cfg: Dict[str, Any] = {"goal_approach_window_fraction": 0.1, "contact_window_fraction": 0.1}
+        curve_sampler, vias_opt, info = _plan_cbs_stack(planner_method, args.scenario)
     else:
-        curve_sampler, vias_opt, info = _plan_rrt(
-            scenario=scenario,
-            planner_cfg=planner_cfg,
-            planner_options=planner_options,
+        planner_method, planner_cfg, planner_options = _planner_entry(
+            method=args.planner,
+            optimized_params_file=Path(args.optimized_params_file),
         )
+        if planner_method in {"Powell", "CEM", "Nelder-Mead"}:
+            curve_sampler, vias_opt, info = _plan_spline_method(
+                planner_method=planner_method,
+                planner_cfg=planner_cfg,
+                planner_options=planner_options,
+                scenario=scenario,
+            )
+        elif planner_method == "VP-STO":
+            curve_sampler, vias_opt, info = _plan_vpsto(
+                scenario=scenario,
+                planner_cfg=planner_cfg,
+                planner_options=planner_options,
+            )
+        else:
+            curve_sampler, vias_opt, info = _plan_rrt(
+                scenario=scenario,
+                planner_cfg=planner_cfg,
+                planner_options=planner_options,
+            )
     opt_duration = time.time() - t_start
     print(f"Optimization took {opt_duration:.2f} seconds")
 

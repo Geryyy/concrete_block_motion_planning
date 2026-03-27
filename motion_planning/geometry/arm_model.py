@@ -215,11 +215,11 @@ class CraneArmCollisionModel:
         self._act_names = list(stage.config.actuated_joints)
         self._model = pin.buildModelFromUrdf(stage.config.urdf_path)
         self._data = self._model.createData()
+        # Reuse the steady-state solver already constructed by JointGoalStage
+        self._steady_state = stage._steady_state
 
     def _ensure_steady_state(self):
-        if self._steady_state is None:
-            from motion_planning.mechanics.analytic.steady_state import CraneSteadyState
-            self._steady_state = CraneSteadyState()
+        self._ensure_loaded()
         return self._steady_state
 
     # ------------------------------------------------------------------

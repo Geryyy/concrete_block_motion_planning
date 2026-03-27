@@ -1,6 +1,6 @@
 from typing import List, Tuple, Optional, Union
 import numpy as np
-import fcl
+import hppfcl
 
 from .blocks import Block
 from .utils import quat_to_rot
@@ -75,7 +75,7 @@ class Scene:
         }
 
     def fcl_objects(self):
-        return [b.fcl_object() for b in self.blocks]
+        return [b.hppfcl_shape_tf() for b in self.blocks]
 
     def signed_distance(self, p: np.ndarray, point_radius: float = 1e-6) -> float:
         """Minimum signed distance from point p to the union of blocks.
@@ -100,50 +100,31 @@ class Scene:
     ) -> float:
         """Minimum signed distance from a moving box to scene blocks.
 
-        Positive values mean separated, a small negative value means collision.
+        Positive = separated [m], negative = penetration depth [m].
+        Uses hppfcl which returns proper signed distances (no sentinel values).
         """
         sx, sy, sz = map(float, size)
         R = quat_to_rot(quat)
         T = np.asarray(position, dtype=float).reshape(3)
-        moving = fcl.CollisionObject(fcl.Box(sx, sy, sz), fcl.Transform(R, T))
+        moving_shape = hppfcl.Box(sx, sy, sz)
+        moving_tf = hppfcl.Transform3f()
+        moving_tf.setRotation(R)
+        moving_tf.setTranslation(T)
 
-        req_dist = fcl.DistanceRequest(enable_nearest_points=False)
-        req_col = fcl.CollisionRequest(num_max_contacts=8, enable_contact=True)
+        req = hppfcl.DistanceRequest()
         ignore = set(ignore_ids or [])
-
         min_dist = np.inf
-        in_collision = False
-        max_penetration = 0.0
+
         for b in self.blocks:
             if b.object_id is not None and b.object_id in ignore:
                 continue
-
-            static_obj = b.fcl_object()
-            res_dist = fcl.DistanceResult()
-            d = fcl.distance(moving, static_obj, req_dist, res_dist)
+            static_shape, static_tf = b.hppfcl_shape_tf()
+            res = hppfcl.DistanceResult()
+            d = float(hppfcl.distance(moving_shape, moving_tf, static_shape, static_tf, req, res))
             if d < min_dist:
                 min_dist = d
 
-            res_col = fcl.CollisionResult()
-            if fcl.collide(moving, static_obj, req_col, res_col) > 0:
-                in_collision = True
-                contacts = getattr(res_col, "contacts", []) or []
-                for c in contacts:
-                    pen = float(getattr(c, "penetration_depth", 0.0) or 0.0)
-                    if pen > max_penetration:
-                        max_penetration = pen
-
-        if not np.isfinite(min_dist):
-            return np.inf
-        if not in_collision:
-            return float(min_dist)
-        if max_penetration > 0.0:
-            return -max_penetration
-
-        # Fallback when penetration depth is unavailable: sample box points against point-SDF.
-        sample_pts = self._sample_box_points(size=size, position=T, quat=quat)
-        point_sdf = np.array([self.signed_distance(p) for p in sample_pts], dtype=float)
-        return float(np.min(point_sdf))
+        return float(min_dist) if np.isfinite(min_dist) else np.inf
 
     def _sample_box_points(
         self,

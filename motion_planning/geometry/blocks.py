@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Tuple, Optional
 import numpy as np
-import fcl
+import hppfcl
 
 from .utils import quat_to_rot
 
@@ -12,13 +12,16 @@ class Block:
     quat: Tuple[float, float, float, float]   # (x, y, z, w)
     object_id: Optional[str] = None           # user or auto-assigned ID
 
-    def fcl_object(self) -> fcl.CollisionObject:
+    def hppfcl_shape_tf(self) -> tuple:
+        """Return (hppfcl.Box, hppfcl.Transform3f) for distance queries."""
         sx, sy, sz = self.size
-        geom = fcl.Box(sx, sy, sz)
+        shape = hppfcl.Box(sx, sy, sz)
         R = quat_to_rot(self.quat)
         T = np.array(self.position, dtype=float)
-        tf = fcl.Transform(R, T)
-        return fcl.CollisionObject(geom, tf)
+        tf = hppfcl.Transform3f()
+        tf.setRotation(R)
+        tf.setTranslation(T)
+        return shape, tf
 
     def contains(self, p: np.ndarray) -> bool:
         """Check if point p (world) is inside the block."""

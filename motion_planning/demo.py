@@ -133,9 +133,8 @@ def _plan_cbs_stack(
 ) -> tuple[Callable[[np.ndarray], np.ndarray], Callable[[np.ndarray], np.ndarray], Dict[str, Any]]:
     """Run a CBS standalone stack and return (curve_sampler, yaw_fn, info).
 
-    Looks up the best-matching CBS scenario from make_default_scenarios()
-    for the given demo scenario name, runs the CBS planner, then transforms
-    the result from K0 frame back to world frame using overlay_scene_translation.
+    All CBS scenarios and their block scenes are defined in K0_mounting_base
+    frame, so no coordinate transformation is needed.
     """
     from motion_planning.standalone.scenarios import make_default_scenarios
     from motion_planning.standalone.stacks import STACK_REGISTRY
@@ -145,72 +144,48 @@ def _plan_cbs_stack(
     if fn is None:
         raise KeyError(f"CBS stack '{stack_name}' not in STACK_REGISTRY")
 
-    # Find a matching CBS scenario: prefer one with overlay_scene_name matching the
-    # demo scenario and a scene_translation (so it has planner_start_q and is reachable)
     cbs_scenarios = make_default_scenarios()
-    cbs_scenario = None
-    k0_to_world_offset = None
-
-    for sc in cbs_scenarios.values():
-        overlay = getattr(sc, "overlay_scene_name", None)
-        if overlay == demo_scenario_name and getattr(sc, "overlay_scene_translation", None) is not None:
-            cbs_scenario = sc
-            k0_to_world_offset = np.asarray(sc.overlay_scene_translation, dtype=float)
-            break
-
-    if cbs_scenario is None:
-        # Fallback: use any CBS scenario with this overlay name
-        for sc in cbs_scenarios.values():
-            if getattr(sc, "overlay_scene_name", None) == demo_scenario_name:
-                cbs_scenario = sc
-                break
-
+    # Match by overlay_scene_name (e.g. "step_01_first_on_ground")
+    cbs_scenario = next(
+        (sc for sc in cbs_scenarios.values()
+         if getattr(sc, "overlay_scene_name", None) == demo_scenario_name),
+        None,
+    )
     if cbs_scenario is None:
         raise ValueError(
-            f"No CBS standalone scenario found for demo scenario '{demo_scenario_name}'. "
-            f"Available CBS scenarios: {list(cbs_scenarios.keys())}"
+            f"No CBS scenario found for '{demo_scenario_name}'. "
+            f"Available: {list(cbs_scenarios.keys())}"
         )
 
-    print(f"Using CBS scenario '{cbs_scenario.name}' for demo scene '{demo_scenario_name}'")
+    print(f"Running CBS stack '{stack_name}' on scenario '{cbs_scenario.name}'")
     result = fn(cbs_scenario)
     if not result.success:
         raise RuntimeError(f"CBS stack '{stack_name}' failed: {result.message}")
 
-    print(f"CBS stack result: {result.message}")
+    print(f"  {result.message}")
     if result.evaluation:
         ev = result.evaluation
-        print(f"  final pos err: {ev.final_position_error_m * 100:.1f} cm  "
+        print(f"  pos err: {ev.final_position_error_m * 100:.1f} cm  "
               f"path len: {ev.path_length_m:.2f} m")
 
-    tcp_xyz_k0 = np.asarray(result.tcp_xyz, dtype=float).reshape(-1, 3)
+    tcp_xyz = np.asarray(result.tcp_xyz, dtype=float).reshape(-1, 3)
     tcp_yaw_rad = np.asarray(result.tcp_yaw_rad, dtype=float).ravel()
-
-    # Transform K0 → world frame: world = K0 - overlay_scene_translation
-    if k0_to_world_offset is not None:
-        tcp_xyz = tcp_xyz_k0 - k0_to_world_offset.reshape(1, 3)
-    else:
-        tcp_xyz = tcp_xyz_k0
-
-    # curve sampler: interpolate tcp_xyz at u ∈ [0, 1]
     t = np.linspace(0.0, 1.0, tcp_xyz.shape[0])
 
     def curve_sampler(uq: np.ndarray) -> np.ndarray:
         u = np.asarray(uq, dtype=float).reshape(-1)
-        x = np.interp(u, t, tcp_xyz[:, 0])
-        y = np.interp(u, t, tcp_xyz[:, 1])
-        z = np.interp(u, t, tcp_xyz[:, 2])
-        return np.column_stack([x, y, z])
+        return np.column_stack([np.interp(u, t, tcp_xyz[:, i]) for i in range(3)])
 
     def yaw_fn(uq: np.ndarray) -> np.ndarray:
         u = np.asarray(uq, dtype=float).reshape(-1)
-        yaw_deg = np.interp(u, t, np.degrees(tcp_yaw_rad))
-        return yaw_deg
+        return np.interp(u, t, np.degrees(tcp_yaw_rad))
 
     info: Dict[str, Any] = {
         "yaw_fn": yaw_fn,
         "success": result.success,
         "message": result.message,
-        "nit": int(result.diagnostics.get("ilqr_iterations", result.diagnostics.get("vpsto_iterations", 0))),
+        "nit": int(result.diagnostics.get("ilqr_iterations",
+                    result.diagnostics.get("vpsto_iterations", 0))),
         "preferred_clearance": 0.05,
     }
     return curve_sampler, np.empty((0, 3), dtype=float), info

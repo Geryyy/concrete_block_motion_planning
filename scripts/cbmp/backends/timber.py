@@ -32,6 +32,7 @@ class TimberPlannerBackend(PlannerBackend):
     _TIMBER_DIRECT_METHODS = {"", "TIMBER_MOVE_EMPTY", "TIMBER_A2B", "MOVE_EMPTY"}
     _TIMBER_LOADED_METHODS = {"TIMBER_MOVE_LOADED", "TIMBER_CARRY", "MOVE_LOADED"}
     _TIMBER_GRIP_PHASES = {
+        "TIMBER_LAYDOWN": 0,
         "TIMBER_GRIP": 1,
         "TIMBER_LIFT": 2,
         "TIMBER_RELEASE": 3,
@@ -197,7 +198,9 @@ class TimberPlannerBackend(PlannerBackend):
         req.phi_tool_n = float(
             self._node._quaternion_to_yaw(transformed_goal.pose.orientation)
         )
-        req.carries_log = bool(method_norm in {"TIMBER_LIFT", "TIMBER_RELEASE"})
+        req.carries_log = bool(
+            method_norm in {"TIMBER_LAYDOWN", "TIMBER_LIFT", "TIMBER_RELEASE"}
+        )
         req.log = payload.shape
         req.slow_down = 1.0
         req.select_phases = int(self._TIMBER_GRIP_PHASES[method_norm])

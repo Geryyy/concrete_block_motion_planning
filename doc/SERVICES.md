@@ -38,6 +38,8 @@ Current note:
 - for the CBS/concrete path, this is the preferred shared-shell entrypoint
 - the concrete online default is `TOPPRA_PATH_FOLLOWING`
 - for the timber path, this remains the working reference service
+- for timber-first commissioning, prefer
+  `launch/motion_planning_timber_commissioning.launch.py`
 
 ### `~/execute_trajectory`
 

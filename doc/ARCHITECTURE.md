@@ -22,6 +22,13 @@ The active commissioning goal is backend interchangeability behind that API:
   - geometric planning against a centralized world-model scene
   - fully-actuated online trajectory stage with TOPP-RA path following
 
+For the fast commissioning route, prefer:
+
+- `launch/motion_planning_timber_commissioning.launch.py`
+
+That launch keeps the public CBS service surface unchanged, but defaults the
+planner shell to the timber backend and the timber-compatible execution path.
+
 ## Module layout
 
 - `scripts/motion_planning_node.py`

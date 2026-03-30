@@ -6,6 +6,7 @@ bool has_task
 string task_id
 string target_block_id
 string reference_block_id
+geometry_msgs/PoseStamped pickup_pose
 geometry_msgs/PoseStamped target_pose
 geometry_msgs/PoseStamped reference_pose
 string message

@@ -25,6 +25,7 @@ class _FakeNode(ServiceHandlersMixin):
                     task_id="demo_01_A",
                     target_block_id="A",
                     reference_block_id="",
+                    pickup_pose=PoseStamped(),
                     target_pose=PoseStamped(),
                     reference_pose=PoseStamped(),
                 ),
@@ -32,12 +33,18 @@ class _FakeNode(ServiceHandlersMixin):
                     task_id="demo_02_B",
                     target_block_id="B",
                     reference_block_id="A",
+                    pickup_pose=PoseStamped(),
                     target_pose=PoseStamped(),
                     reference_pose=PoseStamped(),
                 ),
             ]
         }
         self._wall_plan_progress = {"demo": 0}
+        self._get_coarse_blocks_client = None
+
+    def _lookup_current_block_pose(self, block_id: str, timeout_s: float):
+        del block_id, timeout_s
+        return None, "test fallback"
 
 
 def _req(name: str = "", reset: bool = False) -> SimpleNamespace:
@@ -55,6 +62,7 @@ def test_wall_plan_progression_and_completion() -> None:
     assert first.success is True
     assert first.has_task is True
     assert first.task_id == "demo_01_A"
+    assert hasattr(first, "pickup_pose")
 
     second = node._handle_get_next_assembly_task(_req(), _res())
     assert second.success is True

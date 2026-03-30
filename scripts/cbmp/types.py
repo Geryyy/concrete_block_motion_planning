@@ -33,5 +33,6 @@ class WallPlanTask:
     task_id: str
     target_block_id: str
     reference_block_id: str
+    pickup_pose: PoseStamped
     target_pose: PoseStamped
     reference_pose: PoseStamped

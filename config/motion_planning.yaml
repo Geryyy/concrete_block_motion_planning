@@ -3,8 +3,11 @@ concrete_block_motion_planning_node:
     planner:
       backend: "concrete"
       timber_a2b_service: "a2b_movement"
+      timber_grip_service: "grip_traj_movement"
       timber_goal_frame: "K0_mounting_base"
       timber_move_empty_target_z: 2.36
+      timber_payload_density_kg_m3: 2400.0
+      timber_payload_grippoint_xyz: [0.0, 0.0, 0.0]
     default_geometric_method: "POWELL"
     # Concrete-block stack keeps a staged online pipeline:
     # geometric path planning + fully-actuated TOPP-RA path following.

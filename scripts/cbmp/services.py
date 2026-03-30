@@ -5,6 +5,7 @@ from typing import Any, Dict, Tuple
 import numpy as np
 from concrete_block_perception.msg import PlanningSceneObject
 from concrete_block_perception.srv import GetCoarseBlocks, GetPlanningScene
+from geometry_msgs.msg import PoseStamped
 
 from concrete_block_motion_planning.srv import (
     ComputeTrajectory,
@@ -20,6 +21,39 @@ from .types import StoredTrajectory
 
 
 class ServiceHandlersMixin:
+    def _lookup_current_block_pose(
+        self,
+        block_id: str,
+        timeout_s: float,
+    ):
+        if not block_id.strip() or self._get_coarse_blocks_client is None:
+            return None, "coarse-block service client not initialized"
+        if not self._get_coarse_blocks_client.wait_for_service(timeout_sec=1.0):
+            return None, (
+                f"coarse-block service '{self._world_model_get_coarse_blocks_service}' unavailable"
+            )
+
+        req = GetCoarseBlocks.Request()
+        req.force_refresh = False
+        req.timeout_s = max(0.0, float(timeout_s))
+        req.query_stamp = self.get_clock().now().to_msg()
+        try:
+            res = self._get_coarse_blocks_client.call(req)
+        except Exception as exc:
+            return None, f"coarse-block lookup failed ({exc})"
+        if res is None or not res.success:
+            msg = "no response" if res is None else res.message
+            return None, f"coarse-block lookup failed: {msg}"
+
+        for block in res.blocks.blocks:
+            if str(block.id).strip() != block_id.strip():
+                continue
+            stamped = PoseStamped()
+            stamped.header = res.blocks.header
+            stamped.pose = block.pose
+            return stamped, "ok"
+        return None, f"block '{block_id}' not found in current coarse blocks"
+
     def _resolve_planning_context(
         self,
         target_block_id: str,
@@ -438,14 +472,25 @@ class ServiceHandlersMixin:
         task = tasks[idx]
         self._wall_plan_progress[plan_name] = idx + 1
 
+        pickup_pose = task.pickup_pose
+        pickup_lookup_msg = "wall-plan fallback"
+        live_pickup_pose, pickup_lookup_msg = self._lookup_current_block_pose(
+            task.target_block_id,
+            timeout_s=1.0,
+        )
+        if live_pickup_pose is not None:
+            pickup_pose = live_pickup_pose
+
         response.success = True
         response.has_task = True
         response.task_id = task.task_id
         response.target_block_id = task.target_block_id
         response.reference_block_id = task.reference_block_id
+        response.pickup_pose = pickup_pose
         response.target_pose = task.target_pose
         response.reference_pose = task.reference_pose
         response.message = (
             f"Task {idx + 1}/{len(tasks)} from wall plan '{plan_name}': {task.task_id}"
+            f" | pickup_pose={pickup_lookup_msg}"
         )
         return response

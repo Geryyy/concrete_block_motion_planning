@@ -1506,6 +1506,10 @@ class RuntimeHelpersMixin:
 
                 resolved_positions[block_id] = pos
 
+                pickup_pose = PoseStamped()
+                pickup_pose.header.frame_id = self._wall_plan_frame_id
+                pickup_pose.pose.orientation.w = 1.0
+
                 target_pose = PoseStamped()
                 target_pose.header.frame_id = self._wall_plan_frame_id
                 target_pose.pose.position.x = float(pos[0])
@@ -1526,6 +1530,7 @@ class RuntimeHelpersMixin:
                     task_id=f"{plan_name}_{idx + 1:02d}_{block_id}",
                     target_block_id=block_id,
                     reference_block_id=reference_block_id,
+                    pickup_pose=pickup_pose,
                     target_pose=target_pose,
                     reference_pose=reference_pose,
                 )

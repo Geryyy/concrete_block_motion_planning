@@ -186,7 +186,7 @@ class BareMetalSingleBlockClient(Node):
 
         goal_pose = self._apply_approach_offset(
             start_pose,
-            task_res.target_pose,
+            task_res.pickup_pose,
             float(self.get_parameter("approach_offset_m").value),
         )
 

@@ -151,8 +151,11 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
     def _bind_config_aliases(self) -> None:
         self._planner_backend_name = self._cfg.planner_backend.strip().lower()
         self._timber_a2b_service = self._cfg.timber_a2b_service.strip()
+        self._timber_grip_service = self._cfg.timber_grip_service.strip()
         self._timber_goal_frame = self._cfg.timber_goal_frame.strip()
         self._timber_move_empty_target_z = float(self._cfg.timber_move_empty_target_z)
+        self._timber_payload_density_kg_m3 = float(self._cfg.timber_payload_density_kg_m3)
+        self._timber_payload_grippoint_xyz = tuple(self._cfg.timber_payload_grippoint_xyz)
         self._default_geometric_method = self._cfg.default_geometric_method
         self._default_trajectory_method = self._cfg.default_trajectory_method
         self._n_points = self._cfg.path_interpolation_points

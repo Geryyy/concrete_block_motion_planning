@@ -63,8 +63,11 @@ def test_config_supports_planner_backend_parameters() -> None:
             self._params = {
                 "planner.backend": "timber",
                 "planner.timber_a2b_service": "/a2b_movement",
+                "planner.timber_grip_service": "/grip_traj_movement",
                 "planner.timber_goal_frame": "K0_mounting_base",
                 "planner.timber_move_empty_target_z": 2.5,
+                "planner.timber_payload_density_kg_m3": 2500.0,
+                "planner.timber_payload_grippoint_xyz": [0.1, 0.2, 0.3],
             }
 
         def declare_parameter(self, name, default):
@@ -78,8 +81,11 @@ def test_config_supports_planner_backend_parameters() -> None:
     cfg = declare_and_load_config(_Node())
     assert cfg.planner_backend == "timber"
     assert cfg.timber_a2b_service == "/a2b_movement"
+    assert cfg.timber_grip_service == "/grip_traj_movement"
     assert cfg.timber_goal_frame == "K0_mounting_base"
     assert cfg.timber_move_empty_target_z == pytest.approx(2.5)
+    assert cfg.timber_payload_density_kg_m3 == pytest.approx(2500.0)
+    assert cfg.timber_payload_grippoint_xyz == pytest.approx((0.1, 0.2, 0.3))
 
 
 def test_named_configuration_resolver_registers_stored_trajectory() -> None:
@@ -101,4 +107,3 @@ def test_named_configuration_resolver_registers_stored_trajectory() -> None:
     assert result.success is True
     assert result.trajectory is traj
     assert result.trajectory_id in stored
-

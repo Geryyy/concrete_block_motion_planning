@@ -14,8 +14,10 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 from cbmp.backends.base import PlannerBackend
+from cbmp.compatibility import A2BCompatibilityRequest
 from cbmp.named_configurations import NamedConfigurationResolver
 from cbmp.node import ConcreteBlockMotionPlanningNode
+from cbmp.results import A2BCompatibilityResult
 from cbmp.types import StoredTrajectory
 from concrete_block_motion_planning.srv import PlanAndComputeTrajectory
 
@@ -48,6 +50,19 @@ class _FakeBackend(PlannerBackend):
             if "cartesian_path" in kwargs["planning_context"]
             else type("DummyPath", (), {"poses": []})(),
             geometric_plan_id="fake_geo",
+        )
+
+    def plan_a2b_compat(
+        self,
+        *,
+        request: A2BCompatibilityRequest,
+    ) -> A2BCompatibilityResult:
+        del request
+        return A2BCompatibilityResult(
+            success=False,
+            message="fake compatibility path",
+            trajectory=JointTrajectory(),
+            tcp_path=[],
         )
 
 

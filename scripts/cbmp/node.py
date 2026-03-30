@@ -15,6 +15,7 @@ from trajectory_msgs.msg import JointTrajectory
 from control_msgs.action import FollowJointTrajectory
 from controller_manager_msgs.srv import SwitchController
 from concrete_block_perception.srv import GetCoarseBlocks, GetPlanningScene
+from timber_crane_planning_interfaces.srv import CalcMovement
 
 from concrete_block_motion_planning.srv import (
     ComputeTrajectory,
@@ -37,8 +38,11 @@ from .types import StoredGeometricPlan, StoredTrajectory, WallPlanTask
 
 
 class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin, Node):
-    def __init__(self) -> None:
-        super().__init__("concrete_block_motion_planning_node")
+    def __init__(self, *, parameter_overrides=None) -> None:
+        super().__init__(
+            "concrete_block_motion_planning_node",
+            parameter_overrides=list(parameter_overrides or []),
+        )
 
         self._cfg: NodeConfig = declare_and_load_config(self)
         self._state = MotionPlanningState()
@@ -152,6 +156,10 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
         self._planner_backend_name = self._cfg.planner_backend.strip().lower()
         self._timber_a2b_service = self._cfg.timber_a2b_service.strip()
         self._timber_grip_service = self._cfg.timber_grip_service.strip()
+        self._compatibility_a2b_service_enabled = bool(
+            self._cfg.compatibility_a2b_service_enabled
+        )
+        self._compatibility_a2b_service_name = self._cfg.compatibility_a2b_service_name.strip()
         self._timber_goal_frame = self._cfg.timber_goal_frame.strip()
         self._timber_move_empty_target_z = float(self._cfg.timber_move_empty_target_z)
         self._timber_payload_density_kg_m3 = float(self._cfg.timber_payload_density_kg_m3)
@@ -389,6 +397,13 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
             )
 
     def _register_services(self) -> None:
+        if self._compatibility_a2b_service_enabled and self._compatibility_a2b_service_name:
+            self._compat_a2b_srv = self.create_service(
+                CalcMovement,
+                self._compatibility_a2b_service_name,
+                self._handle_calc_movement_compat,
+                callback_group=self._service_cb_group,
+            )
         # New stage-split services
         self._plan_geo_srv = self.create_service(
             PlanGeometricPath,
@@ -432,6 +447,7 @@ class ConcreteBlockMotionPlanningNode(ServiceHandlersMixin, RuntimeHelpersMixin,
             "ConcreteBlockMotionPlanningNode ready | "
             f"default_geometric_method={self._default_geometric_method} | "
             f"default_trajectory_method={self._default_trajectory_method} | "
+            f"compat_a2b_service={self._compatibility_a2b_service_name if self._compatibility_a2b_service_enabled else '<disabled>'} | "
             f"planning_runtime_ready={self._planning_runtime_ready} | "
             f"execution_enabled={self._execution_enabled} | "
             f"execution_backend={self._execution_backend} | "

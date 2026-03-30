@@ -8,6 +8,9 @@ concrete_block_motion_planning_node:
       timber_move_empty_target_z: 2.36
       timber_payload_density_kg_m3: 2400.0
       timber_payload_grippoint_xyz: [0.0, 0.0, 0.0]
+    compatibility:
+      a2b_service_enabled: false
+      a2b_service_name: "a2b_movement"
     default_geometric_method: "POWELL"
     # Timber commissioning path: let the backend own motion generation directly.
     default_trajectory_method: "TIMBER_MOVE_EMPTY"

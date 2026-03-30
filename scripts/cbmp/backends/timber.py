@@ -16,7 +16,8 @@ from wood_log_msgs.msg import LogShape
 
 from timber_crane_planning_interfaces.srv import CalcGripMovement, CalcMovement
 
-from ..results import BackendPlanResult, PlannerCapabilities
+from ..compatibility import A2BCompatibilityRequest, make_empty_compat_trajectory
+from ..results import A2BCompatibilityResult, BackendPlanResult, PlannerCapabilities
 from .base import PlannerBackend
 
 
@@ -96,6 +97,62 @@ class TimberPlannerBackend(PlannerBackend):
             trajectory_timeout_s=trajectory_timeout_s,
             planning_context=planning_context,
             carries_payload=loaded,
+        )
+
+    def plan_a2b_compat(
+        self,
+        *,
+        request: A2BCompatibilityRequest,
+    ) -> A2BCompatibilityResult:
+        if (
+            self._node._compatibility_a2b_service_enabled
+            and self._node._timber_a2b_service == self._node._compatibility_a2b_service_name
+        ):
+            return A2BCompatibilityResult(
+                success=False,
+                message=(
+                    "Timber compatibility delegation would recurse because "
+                    "planner.timber_a2b_service matches the public compatibility service name."
+                ),
+                trajectory=make_empty_compat_trajectory(),
+                tcp_path=[],
+            )
+
+        if not self._move_client.wait_for_service(timeout_sec=2.0):
+            return A2BCompatibilityResult(
+                success=False,
+                message=f"Timber backend service '{self._node._timber_a2b_service}' unavailable.",
+                trajectory=make_empty_compat_trajectory(),
+                tcp_path=[],
+            )
+
+        timeout_s = max(5.0, float(request.t_end), 5.0)
+        try:
+            res = self._move_client.call(request.raw_request, timeout_sec=timeout_s)
+        except TypeError:
+            res = self._move_client.call(request.raw_request)
+        except Exception as exc:
+            return A2BCompatibilityResult(
+                success=False,
+                message=(
+                    "Timed out waiting for timber backend compatibility trajectory "
+                    f"(timeout={timeout_s:.1f}s): {exc}"
+                ),
+                trajectory=make_empty_compat_trajectory(),
+                tcp_path=[],
+            )
+        if res is None:
+            return A2BCompatibilityResult(
+                success=False,
+                message="Timber backend returned no response.",
+                trajectory=make_empty_compat_trajectory(),
+                tcp_path=[],
+            )
+        return A2BCompatibilityResult(
+            success=bool(res.success),
+            message=f"Timber compatibility A2B returned from '{self._node._timber_a2b_service}'.",
+            trajectory=res.trajectory,
+            tcp_path=list(res.tcp_path),
         )
 
     def _plan_a2b(

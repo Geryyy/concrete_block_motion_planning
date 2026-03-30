@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path as NavPath
 from trajectory_msgs.msg import JointTrajectory
 
@@ -23,3 +24,10 @@ class BackendPlanResult:
     cartesian_path: NavPath
     geometric_plan_id: str = ""
 
+
+@dataclass
+class A2BCompatibilityResult:
+    success: bool
+    message: str
+    trajectory: JointTrajectory
+    tcp_path: list[PoseStamped]

@@ -4,8 +4,9 @@ from geometry_msgs.msg import PoseStamped
 
 from concrete_block_motion_planning.srv import ComputeTrajectory
 
+from ..compatibility import A2BCompatibilityRequest, make_empty_compat_trajectory
 from ..ids import make_geometric_plan_id
-from ..results import BackendPlanResult, PlannerCapabilities
+from ..results import A2BCompatibilityResult, BackendPlanResult, PlannerCapabilities
 from .base import PlannerBackend
 
 
@@ -86,4 +87,20 @@ class ConcretePlannerBackend(PlannerBackend):
             trajectory=traj_res.trajectory,
             cartesian_path=actual_path,
             geometric_plan_id=geometric_plan_id,
+        )
+
+    def plan_a2b_compat(
+        self,
+        *,
+        request: A2BCompatibilityRequest,
+    ) -> A2BCompatibilityResult:
+        del request
+        return A2BCompatibilityResult(
+            success=False,
+            message=(
+                "CBS a2b compatibility path is wired, but the concrete planner "
+                "implementation is not available yet."
+            ),
+            trajectory=make_empty_compat_trajectory(),
+            tcp_path=[],
         )

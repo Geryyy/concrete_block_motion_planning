@@ -13,6 +13,8 @@ class NodeConfig:
     planner_backend: str
     timber_a2b_service: str
     timber_grip_service: str
+    compatibility_a2b_service_enabled: bool
+    compatibility_a2b_service_name: str
     timber_goal_frame: str
     timber_move_empty_target_z: float
     timber_payload_density_kg_m3: float
@@ -71,6 +73,8 @@ def declare_and_load_config(node: Node) -> NodeConfig:
     node.declare_parameter("planner.backend", "concrete")
     node.declare_parameter("planner.timber_a2b_service", "a2b_movement")
     node.declare_parameter("planner.timber_grip_service", "grip_traj_movement")
+    node.declare_parameter("compatibility.a2b_service_enabled", False)
+    node.declare_parameter("compatibility.a2b_service_name", "a2b_movement")
     node.declare_parameter("planner.timber_goal_frame", "K0_mounting_base")
     node.declare_parameter("planner.timber_move_empty_target_z", 2.36)
     node.declare_parameter("planner.timber_payload_density_kg_m3", 2400.0)
@@ -153,6 +157,12 @@ def declare_and_load_config(node: Node) -> NodeConfig:
         planner_backend=str(node.get_parameter("planner.backend").value),
         timber_a2b_service=str(node.get_parameter("planner.timber_a2b_service").value),
         timber_grip_service=str(node.get_parameter("planner.timber_grip_service").value),
+        compatibility_a2b_service_enabled=bool(
+            node.get_parameter("compatibility.a2b_service_enabled").value
+        ),
+        compatibility_a2b_service_name=str(
+            node.get_parameter("compatibility.a2b_service_name").value
+        ),
         timber_goal_frame=str(node.get_parameter("planner.timber_goal_frame").value),
         timber_move_empty_target_z=float(
             node.get_parameter("planner.timber_move_empty_target_z").value

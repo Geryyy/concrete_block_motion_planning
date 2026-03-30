@@ -6,6 +6,7 @@ import numpy as np
 from concrete_block_perception.msg import PlanningSceneObject
 from concrete_block_perception.srv import GetCoarseBlocks, GetPlanningScene
 from geometry_msgs.msg import PoseStamped
+from timber_crane_planning_interfaces.srv import CalcMovement
 
 from concrete_block_motion_planning.srv import (
     ComputeTrajectory,
@@ -16,11 +17,56 @@ from concrete_block_motion_planning.srv import (
     PlanGeometricPath,
 )
 
+from .compatibility import (
+    PZS100_A2B_JOINT_ORDER,
+    make_empty_compat_trajectory,
+    translate_calc_movement_request,
+)
 from .ids import make_geometric_plan_id, make_trajectory_id
 from .types import StoredTrajectory
 
 
 class ServiceHandlersMixin:
+    def _handle_calc_movement_compat(
+        self,
+        request: CalcMovement.Request,
+        response: CalcMovement.Response,
+    ) -> CalcMovement.Response:
+        compat_request = translate_calc_movement_request(
+            request,
+            frame_id=self._timber_goal_frame or "K0_mounting_base",
+            yaw_to_quaternion=self._yaw_to_quaternion,
+        )
+
+        if self._planner_backend.backend_name == "concrete" and bool(request.carries_log):
+            response.success = False
+            response.trajectory = make_empty_compat_trajectory()
+            response.tcp_path = []
+            self.get_logger().warn(
+                "a2b_movement compatibility failure | "
+                "CBS concrete a2b compatibility currently supports move-empty only; "
+                "payload requests are not implemented."
+            )
+            return response
+
+        result = self._planner_backend.plan_a2b_compat(request=compat_request)
+        response.success = bool(result.success)
+        response.trajectory = result.trajectory
+        response.tcp_path = list(result.tcp_path)
+        self._normalize_compat_trajectory(response.trajectory)
+        if result.success:
+            self.get_logger().info(f"a2b_movement compatibility success | {result.message}")
+        else:
+            self.get_logger().warn(f"a2b_movement compatibility failure | {result.message}")
+        return response
+
+    @staticmethod
+    def _normalize_compat_trajectory(trajectory) -> None:
+        if trajectory is None:
+            return
+        if not getattr(trajectory, "joint_names", None):
+            trajectory.joint_names = list(PZS100_A2B_JOINT_ORDER)
+
     def _lookup_current_block_pose(
         self,
         block_id: str,

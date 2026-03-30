@@ -52,6 +52,12 @@ def generate_launch_description():
                 "planner_timber_a2b_service", default_value="a2b_movement"
             ),
             DeclareLaunchArgument(
+                "compatibility_a2b_service_enabled", default_value="false"
+            ),
+            DeclareLaunchArgument(
+                "compatibility_a2b_service_name", default_value="a2b_movement"
+            ),
+            DeclareLaunchArgument(
                 "planner_timber_goal_frame", default_value="K0_mounting_base"
             ),
             DeclareLaunchArgument(
@@ -113,6 +119,16 @@ def generate_launch_description():
                     {
                         "planner.timber_a2b_service": LaunchConfiguration(
                             "planner_timber_a2b_service"
+                        )
+                    },
+                    {
+                        "compatibility.a2b_service_enabled": LaunchConfiguration(
+                            "compatibility_a2b_service_enabled"
+                        )
+                    },
+                    {
+                        "compatibility.a2b_service_name": LaunchConfiguration(
+                            "compatibility_a2b_service_name"
                         )
                     },
                     {

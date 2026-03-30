@@ -5,7 +5,8 @@ from typing import Dict
 
 from geometry_msgs.msg import PoseStamped
 
-from ..results import BackendPlanResult, PlannerCapabilities
+from ..compatibility import A2BCompatibilityRequest
+from ..results import A2BCompatibilityResult, BackendPlanResult, PlannerCapabilities
 
 
 class PlannerBackend(ABC):
@@ -34,3 +35,10 @@ class PlannerBackend(ABC):
     ) -> BackendPlanResult:
         raise NotImplementedError
 
+    @abstractmethod
+    def plan_a2b_compat(
+        self,
+        *,
+        request: A2BCompatibilityRequest,
+    ) -> A2BCompatibilityResult:
+        raise NotImplementedError

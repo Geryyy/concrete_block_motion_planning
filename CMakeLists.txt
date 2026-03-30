@@ -34,7 +34,6 @@ install(PROGRAMS
   scripts/joint_state_timber_compat.py
   scripts/dummy_joint_state_publisher.py
   scripts/timber_follow_joint_trajectory_proxy.py
-  scripts/dummy_gripper_state_publisher.py
   scripts/gripper_state_bridge.py
   motion_planning_tools/standalone/run_planner_experiment.py
   DESTINATION lib/${PROJECT_NAME}

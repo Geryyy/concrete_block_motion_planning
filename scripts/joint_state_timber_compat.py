@@ -3,10 +3,29 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
 
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+
+
+@dataclass(frozen=True)
+class CompatRangeMap:
+    source_min: float
+    source_max: float
+    compat_min: float
+    compat_max: float
+
+
+def map_source_gripper_position(source_pos: float, range_map: CompatRangeMap) -> float:
+    source_span = range_map.source_max - range_map.source_min
+    if abs(source_span) < 1e-9:
+        return float(range_map.compat_min)
+    alpha = (float(source_pos) - range_map.source_min) / source_span
+    alpha = min(1.0, max(0.0, alpha))
+    compat_span = range_map.compat_max - range_map.compat_min
+    return float(range_map.compat_min + alpha * compat_span)
 
 
 class JointStateTimberCompat(Node):
@@ -18,6 +37,8 @@ class JointStateTimberCompat(Node):
         self.declare_parameter("source_gripper_joint", "q9_left_rail_joint")
         self.declare_parameter("compat_gripper_joint", "theta10_outer_jaw_joint")
         self.declare_parameter("default_compat_position", 1.5708)
+        self.declare_parameter("source_position_min", 0.0)
+        self.declare_parameter("source_position_max", 0.538)
         self.declare_parameter("compat_position_min", 0.8472)
         self.declare_parameter("compat_position_max", 3.0357)
 
@@ -32,11 +53,23 @@ class JointStateTimberCompat(Node):
         self._default_compat_position = float(
             self.get_parameter("default_compat_position").value
         )
+        self._source_position_min = float(
+            self.get_parameter("source_position_min").value
+        )
+        self._source_position_max = float(
+            self.get_parameter("source_position_max").value
+        )
         self._compat_position_min = float(
             self.get_parameter("compat_position_min").value
         )
         self._compat_position_max = float(
             self.get_parameter("compat_position_max").value
+        )
+        self._range_map = CompatRangeMap(
+            source_min=self._source_position_min,
+            source_max=self._source_position_max,
+            compat_min=self._compat_position_min,
+            compat_max=self._compat_position_max,
         )
         self._warned_out_of_range = False
 
@@ -63,18 +96,18 @@ class JointStateTimberCompat(Node):
             idx = compat_msg.name.index(self._source_gripper_joint)
             if idx < len(compat_msg.position):
                 source_pos = float(compat_msg.position[idx])
-                if self._compat_position_min <= source_pos <= self._compat_position_max:
-                    compat_pos = source_pos
+                if self._source_position_min <= source_pos <= self._source_position_max:
+                    compat_pos = map_source_gripper_position(source_pos, self._range_map)
                 else:
                     compat_pos = self._default_compat_position
                     if not self._warned_out_of_range:
                         self.get_logger().warn(
-                            "Source gripper joint %.4f is outside timber-compatible range "
+                            "Source gripper joint %.4f is outside configured source range "
                             "[%.4f, %.4f]; using default compat position %.4f"
                             % (
                                 source_pos,
-                                self._compat_position_min,
-                                self._compat_position_max,
+                                self._source_position_min,
+                                self._source_position_max,
                                 self._default_compat_position,
                             )
                         )
@@ -99,6 +132,8 @@ def main(args=None) -> None:
     node = JointStateTimberCompat()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
         if rclpy.ok():

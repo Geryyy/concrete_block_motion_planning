@@ -66,6 +66,8 @@ def main(args=None) -> None:
     node = DummyJointStatePublisher()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
         if rclpy.ok():

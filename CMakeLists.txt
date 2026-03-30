@@ -32,6 +32,7 @@ install(PROGRAMS
   scripts/joint_goal_feasibility_probe.py
   scripts/rviz_move_empty_interface.py
   scripts/joint_state_timber_compat.py
+  scripts/dummy_joint_state_publisher.py
   scripts/timber_follow_joint_trajectory_proxy.py
   scripts/dummy_gripper_state_publisher.py
   scripts/gripper_state_bridge.py

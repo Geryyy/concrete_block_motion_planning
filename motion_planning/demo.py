@@ -20,8 +20,18 @@ from motion_planning.core.types import PlannerRequest, Scenario
 from motion_planning.geometry import plot_scene
 from motion_planning.geometry.spline_opt import yaw_deg_to_quat
 from motion_planning.geometry.utils import quat_to_rot
-from motion_planning.io.optimized_params import load_optimized_planner_params
-from motion_planning.planners.factory import create_planner
+from motion_planning.standalone.demo_support import (
+    DEFAULT_PLANNER_CFG,
+    FALLBACK_DIAGNOSTICS,
+    is_cbs_stack as demo_is_cbs_stack,
+    make_linear_yaw_fn as demo_make_linear_yaw_fn,
+    make_straight_curve_sampler as demo_make_straight_curve_sampler,
+    plan_cbs_stack as demo_plan_cbs_stack,
+    plan_rrt as demo_plan_rrt,
+    plan_spline_method as demo_plan_spline_method,
+    plan_vpsto as demo_plan_vpsto,
+    planner_entry as demo_planner_entry,
+)
 from motion_planning.scenarios import ScenarioLibrary
 from motion_planning_tools.benchmark.metrics import (
     evaluate_path_metrics,
@@ -524,55 +534,58 @@ def main() -> None:
     try:
         if args.scene_only:
             planner_method = "scene-only"
-            planner_cfg = {"goal_approach_window_fraction": 0.1, "contact_window_fraction": 0.1}
-            curve_sampler = _make_straight_curve_sampler(np.asarray(scenario.start, dtype=float), np.asarray(scenario.goal, dtype=float))
+            planner_cfg = dict(DEFAULT_PLANNER_CFG)
+            curve_sampler = demo_make_straight_curve_sampler(np.asarray(scenario.start, dtype=float), np.asarray(scenario.goal, dtype=float))
             vias_opt = np.empty((0, 3), dtype=float)
             info = {
                 "success": True,
                 "message": "Scene-only visualization using live world-model values.",
-                "yaw_fn": _make_linear_yaw_fn(float(scenario.start_yaw_deg), float(scenario.goal_yaw_deg)),
+                "yaw_fn": demo_make_linear_yaw_fn(float(scenario.start_yaw_deg), float(scenario.goal_yaw_deg)),
                 "planner_fallback": True,
+                **FALLBACK_DIAGNOSTICS,
             }
-        elif _is_cbs_stack(args.planner):
+        elif demo_is_cbs_stack(args.planner):
             planner_method = args.planner.lower().replace("-", "_")
-            planner_cfg = {"goal_approach_window_fraction": 0.1, "contact_window_fraction": 0.1}
-            curve_sampler, vias_opt, info = _plan_cbs_stack(planner_method, args.scenario)
+            planner_cfg = dict(DEFAULT_PLANNER_CFG)
+            curve_sampler, vias_opt, info = demo_plan_cbs_stack(planner_method, args.scenario)
         else:
-            planner_method, planner_cfg, planner_options = _planner_entry(
+            planner_method, planner_cfg, planner_options = demo_planner_entry(
                 method=args.planner,
                 optimized_params_file=Path(args.optimized_params_file),
             )
             if planner_method in {"Powell", "CEM", "Nelder-Mead"}:
-                curve_sampler, vias_opt, info = _plan_spline_method(
+                curve_sampler, vias_opt, info = demo_plan_spline_method(
                     planner_method=planner_method,
                     planner_cfg=planner_cfg,
                     planner_options=planner_options,
                     scenario=scenario,
                 )
             elif planner_method == "VP-STO":
-                curve_sampler, vias_opt, info = _plan_vpsto(
+                curve_sampler, vias_opt, info = demo_plan_vpsto(
                     scenario=scenario,
                     planner_cfg=planner_cfg,
                     planner_options=planner_options,
                 )
             else:
-                curve_sampler, vias_opt, info = _plan_rrt(
+                curve_sampler, vias_opt, info = demo_plan_rrt(
                     scenario=scenario,
                     planner_cfg=planner_cfg,
                     planner_options=planner_options,
+                    yaw_deg_to_quat=yaw_deg_to_quat,
                 )
         if not args.scene_only:
             info["planner_fallback"] = False
     except Exception as exc:
         planner_method = f"{planner_method} (fallback)"
-        planner_cfg = {"goal_approach_window_fraction": 0.1, "contact_window_fraction": 0.1}
-        curve_sampler = _make_straight_curve_sampler(np.asarray(scenario.start, dtype=float), np.asarray(scenario.goal, dtype=float))
+        planner_cfg = dict(DEFAULT_PLANNER_CFG)
+        curve_sampler = demo_make_straight_curve_sampler(np.asarray(scenario.start, dtype=float), np.asarray(scenario.goal, dtype=float))
         vias_opt = np.empty((0, 3), dtype=float)
         info = {
             "success": False,
             "message": f"Planner failed, showing straight-line fallback: {exc}",
-            "yaw_fn": _make_linear_yaw_fn(float(scenario.start_yaw_deg), float(scenario.goal_yaw_deg)),
+            "yaw_fn": demo_make_linear_yaw_fn(float(scenario.start_yaw_deg), float(scenario.goal_yaw_deg)),
             "planner_fallback": True,
+            **FALLBACK_DIAGNOSTICS,
         }
         print(info["message"])
     opt_duration = time.time() - t_start

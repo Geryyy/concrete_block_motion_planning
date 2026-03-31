@@ -1,16 +1,17 @@
-"""motion_planning — robotic crane motion planning library.
+"""motion_planning public API.
 
-This package supports partial runtime availability:
-- Geometry/world-model features require `fcl`.
-- Trajectory optimization requires `acados_template`, `casadi`, `pinocchio`.
+Stable entrypoints are intentionally small:
+- `api.plan(...)` for geometric planning
+- `planner.MotionPlanner` / `plan_trajectory(...)` for two-stage compatibility use
+- core scenario/result types and scene/world-model helpers
 
-Imports below are guarded so lightweight or trajectory-only use remains possible
-when geometric dependencies are not installed.
+Subsystems such as standalone experiments, solver internals, and trajectory
+optimizers should be imported from their own modules when needed.
 """
 
 __all__ = []
 
-# ── Two-stage planner (primary API) ──────────────────────────────────────────
+# ── Stable planning entrypoints ───────────────────────────────────────────────
 try:
     from .planner import MotionPlanner, MotionPlanResult, Trajectory, plan_trajectory
 
@@ -21,7 +22,6 @@ except Exception:  # pragma: no cover - optional dependency surface
     Trajectory = None
     plan_trajectory = None
 
-# ── Standalone geometric path planning ───────────────────────────────────────
 try:
     from .api import plan as plan_path
 
@@ -31,62 +31,10 @@ except Exception:  # pragma: no cover - optional dependency surface
     plan_path = None
     plan = None
 
-# ── Scene management ──────────────────────────────────────────────────────────
+# ── Core data surfaces ────────────────────────────────────────────────────────
 try:
     from .core.world_model import BlockState, WorldModel
     from .geometry.scene import Scene as GeometryScene
-
-    Scene = GeometryScene
-    __all__ += ["Scene", "WorldModel", "BlockState"]
-except Exception:  # pragma: no cover - optional dependency surface
-    BlockState = None
-    WorldModel = None
-    GeometryScene = None
-    Scene = None
-
-# ── Kinematics ────────────────────────────────────────────────────────────────
-try:
-    from .kinematics import CraneKinematics
-
-    __all__ += ["CraneKinematics"]
-except Exception:  # pragma: no cover - optional dependency surface
-    CraneKinematics = None
-
-# ── Trajectory optimizer configs/classes ─────────────────────────────────────
-try:
-    from .trajectory import (
-        TrajectoryOptimizer,
-        CranePathFollowingAcadosConfig,
-        CranePathFollowingAcadosOptimizer,
-        CartesianPathFollowingConfig,
-        CartesianPathFollowingOptimizer,
-    )
-
-    __all__ += [
-        "CartesianPathFollowingConfig",
-        "CranePathFollowingAcadosConfig",
-        "TrajectoryOptimizer",
-        "CartesianPathFollowingOptimizer",
-        "CranePathFollowingAcadosOptimizer",
-    ]
-except Exception:  # pragma: no cover - optional dependency surface
-    TrajectoryOptimizer = None
-    CranePathFollowingAcadosConfig = None
-    CranePathFollowingAcadosOptimizer = None
-    CartesianPathFollowingConfig = None
-    CartesianPathFollowingOptimizer = None
-
-# ── Control ───────────────────────────────────────────────────────────────────
-try:
-    from .control import ComputedTorqueController, PDController
-
-    __all__ += ["PDController", "ComputedTorqueController"]
-except Exception:  # pragma: no cover - optional dependency surface
-    ComputedTorqueController = None
-    PDController = None
-
-# ── Core types ────────────────────────────────────────────────────────────────
-try:
     from .core.spline import BSplinePath
     from .contracts import JointMapping, RobotProfile, TrajectoryContract
     from .core.types import (
@@ -99,7 +47,11 @@ try:
         WallPlan,
     )
 
+    Scene = GeometryScene
     __all__ += [
+        "Scene",
+        "WorldModel",
+        "BlockState",
         "BSplinePath",
         "Scenario",
         "PlannerRequest",
@@ -113,6 +65,10 @@ try:
         "TrajectoryContract",
     ]
 except Exception:  # pragma: no cover - optional dependency surface
+    BlockState = None
+    WorldModel = None
+    GeometryScene = None
+    Scene = None
     BSplinePath = None
     JointMapping = None
     PlannerRequest = None
@@ -125,12 +81,24 @@ except Exception:  # pragma: no cover - optional dependency surface
     WallPlacement = None
     WallPlan = None
 
-# ── Wall planning data loader ────────────────────────────────────────────────
+# ── Convenience loaders and widely used helpers ──────────────────────────────
 try:
+    from .kinematics import CraneKinematics
+    from .control import ComputedTorqueController, PDController
     from .scenarios import WallPlanLibrary, build_wall_plan, list_wall_plans
 
-    __all__ += ["WallPlanLibrary", "build_wall_plan", "list_wall_plans"]
+    __all__ += [
+        "CraneKinematics",
+        "PDController",
+        "ComputedTorqueController",
+        "WallPlanLibrary",
+        "build_wall_plan",
+        "list_wall_plans",
+    ]
 except Exception:  # pragma: no cover - optional dependency surface
+    CraneKinematics = None
+    ComputedTorqueController = None
+    PDController = None
     WallPlanLibrary = None
     build_wall_plan = None
     list_wall_plans = None

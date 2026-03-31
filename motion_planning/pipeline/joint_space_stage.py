@@ -429,6 +429,7 @@ class JointSpaceCartesianPlanner:
                 "solved_anchor_count": float(solved_anchor_count),
                 "dropped_anchor_count": float(dropped_anchor_count),
                 "direct_anchor_fallback": float(1.0 if fallback_used else 0.0),
+                "joint_anchor_fallback_used": float(1.0 if fallback_used else 0.0),
                 "waypoint_count": float(n_wp),
             },
         )

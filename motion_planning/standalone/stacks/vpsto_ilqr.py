@@ -25,9 +25,15 @@ from motion_planning.trajectory.ilqr import (
     TrackingCost,
 )
 
+from ..common import (
+    StandalonePlanningContext,
+    build_planning_context,
+    evaluate_tcp_path,
+    fail_result,
+)
 from ..evaluate import evaluate_plan
 from ..types import StandalonePlanResult, StandaloneScenario
-from .vpsto_path_planning import plan_vpsto_path_planning, _fail as _vpsto_fail
+from .vpsto_path_planning import plan_vpsto_path_planning
 
 
 # ---- iLQR hyper-parameters ----------------------------------------
@@ -89,24 +95,22 @@ def plan_vpsto_ilqr(scenario: StandaloneScenario) -> StandalonePlanResult:
     # q_pas_traj: (N+1, 2) = [theta6, theta7]
 
     # ---- Step 5: FK for TCP path ----
-    stage = JointGoalStage()
-    act_names = list(stage.config.actuated_joints)
-    planner = JointSpaceCartesianPlanner(
-        urdf_path=stage.config.urdf_path,
-        target_frame=stage.config.target_frame,
-        reduced_joint_names=act_names,
+    planning = build_planning_context(
+        scenario,
+        stack_name="vpsto_ilqr",
     )
+    if isinstance(planning, StandalonePlanResult):
+        return planning
+    assert isinstance(planning, StandalonePlanningContext)
 
-    xyz_list = []
-    yaw_list = []
-    q_seed: dict[str, float] = {}
-    for q in q_act:
-        xyz_i, yaw_i, q_seed = planner.fk_world_pose(q, q_seed=q_seed)
-        xyz_list.append(xyz_i)
-        yaw_list.append(yaw_i)
-
-    tcp_xyz = np.asarray(xyz_list, dtype=float)
-    tcp_yaw = np.asarray(yaw_list, dtype=float)
+    tcp_xyz, tcp_yaw = evaluate_tcp_path(
+        planning.planner,
+        planning.actuated_joint_names,
+        q_act,
+        q_seed_map={
+            name: float(planning.q_start[i]) for i, name in enumerate(planning.actuated_joint_names)
+        },
+    )
 
     # ---- Build full 7-DOF q_waypoints for joint plot ----
     q_full = np.hstack([q_act[:, :4], q_pas_traj, q_act[:, 4:5]])
@@ -138,16 +142,27 @@ def plan_vpsto_ilqr(scenario: StandaloneScenario) -> StandalonePlanResult:
         time_s=time_s,
         dq_waypoints=np.hstack([dq_act[:, :4], np.zeros((dq_act.shape[0], 2)), dq_act[:, 4:5]]),
         diagnostics={
+            "reference_path_backend": str(vpsto.diagnostics.get("reference_path_backend", "linear")),
+            "reference_path_fallback_used": float(vpsto.diagnostics.get("reference_path_fallback_used", 0.0)),
             "vpsto_T": T,
             "ilqr_cost": ilqr_result.cost,
             "ilqr_iterations": float(ilqr_result.iterations),
             "waypoint_count": float(q_full.shape[0]),
             "passive_max_th6_deg": float(np.max(np.abs(q_pas_traj[:, 0])) * 180.0 / np.pi),
             "passive_max_th7_deg": float(np.max(np.abs(q_pas_traj[:, 1])) * 180.0 / np.pi),
+            "joint_anchor_fallback_used": 0.0,
         },
     )
     evaluate_plan(result)
     return result
+
+
+def _fail(msg: str) -> StandalonePlanResult:
+    return fail_result(
+        stack_name="vpsto_ilqr",
+        actuated_joint_count=7,
+        message=msg,
+    )
 
 
 def _compute_passive_equilibrium(

@@ -33,6 +33,8 @@ def test_anchor_joint_spline_stack_runs() -> None:
     result = STACK_REGISTRY["cartesian_anchor_joint_spline"](scenario)
     assert result.success
     assert "anchor_count" in result.diagnostics
+    assert result.diagnostics["reference_path_backend"] == "linear"
+    assert "joint_anchor_fallback_used" in result.diagnostics
 
 
 def test_simple_time_scaling_adds_duration() -> None:

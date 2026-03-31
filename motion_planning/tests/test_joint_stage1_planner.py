@@ -34,23 +34,19 @@ def test_joint_space_stage1_planner_returns_full_contract() -> None:
             goal_yaw_deg=scenario_cfg.goal_yaw_deg,
             goal_normals=scenario_cfg.goal_normals,
         ),
-        config={
-            "joint_waypoint_count": 7,
-            "n_samples_curve": 41,
-            "preferred_safety_margin": 0.03,
-            "approach_distance_m": 0.45,
-        },
+        config={"n_samples_curve": 41, "preferred_safety_margin": 0.03},
         options={"maxiter": 12, "seed": 5},
     )
 
     result = create_planner("Powell").plan(req)
 
     assert result.success, result.message
-    q_path_full = np.asarray(result.diagnostics["q_path_full"], dtype=float)
-    tcp_xyz = np.asarray(result.diagnostics["tcp_xyz_path"], dtype=float)
-    assert q_path_full.ndim == 2
-    assert q_path_full.shape[1] == 8
-    assert tcp_xyz.shape[0] == q_path_full.shape[0]
-    assert "combined_min_clearance_m" in result.diagnostics
-    assert "approach_alignment_angle_deg" in result.diagnostics
+    ctrl_pts = np.asarray(result.diagnostics["ctrl_pts_xyz"], dtype=float)
+    path_xyz = np.asarray(result.path.sample(41), dtype=float)
+    assert ctrl_pts.ndim == 2
+    assert ctrl_pts.shape[1] == 3
+    assert path_xyz.shape == (41, 3)
+    assert "min_clearance" in result.metrics
+    assert "turn_angle_mean_deg" in result.metrics
+    assert result.diagnostics["solver_method"] == "Powell"
     assert result.path.yaw_fn is not None

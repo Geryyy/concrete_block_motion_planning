@@ -45,6 +45,56 @@ _CBS_SCENARIO_STARTS: dict[str, tuple] = {
 }
 
 
+_CURATED_SCENARIOS: tuple[StandaloneScenario, ...] = (
+    StandaloneScenario(
+        name="short_reachable_move",
+        description="Short validated reachable motion in free space for standalone commissioning.",
+        start_world_xyz=_XYZ_HOVER_CENTER,
+        goal_world_xyz=(0.781, 0.146, -2.874),
+        start_yaw_rad=_YAW_90,
+        goal_yaw_rad=_YAW_90,
+        planner_start_q=_Q_HOVER_CENTER,
+        planner_goal_q=(0.17, -0.80, 0.55, 0.40, -0.17),
+        anchor_count=6,
+    ),
+    StandaloneScenario(
+        name="yaw_change_probe",
+        description="Reachable probe that mainly exercises yaw change handling.",
+        start_world_xyz=_XYZ_HOVER_CENTER,
+        goal_world_xyz=_XYZ_HOVER_LEFT,
+        start_yaw_rad=_YAW_90,
+        goal_yaw_rad=math.radians(60.0),
+        planner_start_q=_Q_HOVER_CENTER,
+        planner_goal_q=_Q_HOVER_LEFT,
+        anchor_count=6,
+    ),
+    StandaloneScenario(
+        name="single_block_transfer",
+        description="Scene-backed block transfer target used to expose current solve limitations.",
+        start_world_xyz=_XYZ_HOVER_CENTER,
+        goal_world_xyz=_XYZ_GOAL_CENTER,
+        start_yaw_rad=_YAW_90,
+        goal_yaw_rad=_YAW_90,
+        planner_start_q=_Q_HOVER_CENTER,
+        planner_goal_q=_Q_GOAL_CENTER,
+        anchor_count=6,
+        overlay_scene_name="step_01_first_on_ground",
+    ),
+    StandaloneScenario(
+        name="scene_demo_step_01_reachable",
+        description="Reachable demo with the step_01 scene overlay and validated seeds.",
+        start_world_xyz=_XYZ_HOVER_CENTER,
+        goal_world_xyz=(0.781, 0.146, -2.874),
+        start_yaw_rad=_YAW_90,
+        goal_yaw_rad=_YAW_90,
+        planner_start_q=_Q_HOVER_CENTER,
+        planner_goal_q=(0.17, -0.80, 0.55, 0.40, -0.17),
+        anchor_count=6,
+        overlay_scene_name="step_01_first_on_ground",
+    ),
+)
+
+
 def make_default_scenarios() -> dict[str, StandaloneScenario]:
     """Return the canonical CBS standalone scenario set.
 
@@ -86,4 +136,6 @@ def make_default_scenarios() -> dict[str, StandaloneScenario]:
             )
         )
 
-    return {sc.name: sc for sc in scenarios}
+    out = {sc.name: sc for sc in _CURATED_SCENARIOS}
+    out.update({sc.name: sc for sc in scenarios})
+    return out

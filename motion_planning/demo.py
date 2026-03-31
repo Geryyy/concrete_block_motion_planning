@@ -158,6 +158,54 @@ def _draw_approach_arrow(ax, origin: np.ndarray, direction: np.ndarray, length: 
     ax.plot([], [], [], color=color, lw=2.5, label=label)
 
 
+def _draw_frame_axes(ax, tf: np.ndarray, length: float, *, label: str) -> None:
+    tf = np.asarray(tf, dtype=float)
+    o = tf[:3, 3]
+    R = tf[:3, :3]
+    colors = ["red", "green", "blue"]
+    for i, color in enumerate(colors):
+        d = R[:, i] * float(length)
+        ax.quiver(float(o[0]), float(o[1]), float(o[2]), float(d[0]), float(d[1]), float(d[2]), color=color, linewidth=2.0)
+    ax.scatter([o[0]], [o[1]], [o[2]], c="k", s=18, label=label)
+
+
+def _set_demo_axes(ax, scene, *point_sets: np.ndarray, margin: float = 0.35) -> None:
+    pts = []
+    for blk in getattr(scene, "blocks", []):
+        pts.append(np.asarray(blk.vertices_world(), dtype=float).reshape(-1, 3))
+    for arr in point_sets:
+        a = np.asarray(arr, dtype=float)
+        if a.size:
+            pts.append(a.reshape(-1, 3))
+    if not pts:
+        return
+    all_pts = np.vstack(pts)
+    mins = np.min(all_pts, axis=0)
+    maxs = np.max(all_pts, axis=0)
+    center = 0.5 * (mins + maxs)
+    span = np.max(maxs - mins) + 2.0 * float(margin)
+    half = 0.5 * span
+    ax.set_xlim(center[0] - half, center[0] + half)
+    ax.set_ylim(center[1] - half, center[1] + half)
+    ax.set_zlim(center[2] - half, center[2] + half)
+    if hasattr(ax, "set_box_aspect"):
+        ax.set_box_aspect((1.0, 1.0, 1.0))
+
+
+def _start_q_map_for_demo_scenario(scene_name: str, arm_model) -> dict[str, float] | None:
+    from motion_planning.standalone.scenarios import make_default_scenarios
+
+    sc = next(
+        (s for s in make_default_scenarios().values() if getattr(s, "overlay_scene_name", None) == scene_name),
+        None,
+    )
+    if sc is None or sc.planner_start_q is None:
+        return None
+    if sc.planner_start_q_seed_map is not None:
+        return dict(sc.planner_start_q_seed_map)
+    return arm_model.complete_joint_map(np.asarray(sc.planner_start_q, dtype=float))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Visual 3D demo for geometric planning scenarios.")
     parser.add_argument(
@@ -182,6 +230,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Optional path to save the rendered figure.",
     )
+    parser.add_argument(
+        "--start-only",
+        action="store_true",
+        help="Skip planning and visualize only the start pose.",
+    )
     return parser
 
 
@@ -201,10 +254,34 @@ def main() -> None:
     planner_method = "joint_space_global_path"
     planner_cfg = dict(DEFAULT_PLANNER_CFG)
     t_start = time.time()
-    if not demo_is_cbs_stack(planner_method):
-        raise ValueError(f"Unsupported demo planner '{planner_method}'")
-    curve_sampler, vias_opt, info = demo_plan_cbs_stack(planner_method, args.scenario)
-    info["planner_fallback"] = False
+    if args.start_only:
+        start_xyz = np.asarray(scenario.start, dtype=float).reshape(3)
+        start_yaw = float(scenario.start_yaw_deg)
+        arm_model = CraneArmCollisionModel()
+        start_q_map = _start_q_map_for_demo_scenario(args.scenario, arm_model)
+
+        def curve_sampler(uq: np.ndarray) -> np.ndarray:
+            u = np.asarray(uq, dtype=float).reshape(-1)
+            return np.repeat(start_xyz.reshape(1, 3), u.size, axis=0)
+
+        info = {
+            "success": True,
+            "message": "Visualizing start pose only.",
+            "yaw_fn": lambda uq: np.full(np.asarray(uq, dtype=float).reshape(-1).shape, start_yaw, dtype=float),
+            "planner_fallback": True,
+            "diagnostics": {} if start_q_map is None else {
+                "q_maps_path": [start_q_map],
+                "tcp_xyz_path": [start_xyz.tolist()],
+                "tcp_yaw_path_rad": [np.radians(start_yaw)],
+            },
+        }
+        vias_opt = np.empty((0, 3), dtype=float)
+        planner_method = "start_only"
+    else:
+        if not demo_is_cbs_stack(planner_method):
+            raise ValueError(f"Unsupported demo planner '{planner_method}'")
+        curve_sampler, vias_opt, info = demo_plan_cbs_stack(planner_method, args.scenario)
+        info["planner_fallback"] = False
     opt_duration = time.time() - t_start
     print(f"Optimization took {opt_duration:.2f} seconds")
 
@@ -300,9 +377,38 @@ def main() -> None:
             alpha=0.30,
             label="crane capsules (goal)",
         )
+        frame_len = 0.18
+        _draw_frame_axes(
+            ax,
+            arm_model._frame_tf(q_maps_path[0], "K8_tool_center_point"),
+            frame_len,
+            label="K8 frame (start)",
+        )
+        if len(q_maps_path) > 1:
+            _draw_frame_axes(
+                ax,
+                arm_model._frame_tf(q_maps_path[-1], "K8_tool_center_point"),
+                frame_len,
+                label="K8 frame (goal)",
+            )
     else:
         arm_clear_anim = np.full(anim_u.shape, np.nan, dtype=float)
         combined_clear_anim = np.full(anim_u.shape, np.nan, dtype=float)
+
+    bounds_pts = [
+        np.asarray(curve, dtype=float),
+        np.asarray(anim_pts, dtype=float),
+        np.asarray([scenario.start, scenario.goal], dtype=float),
+        np.asarray(vias_opt, dtype=float),
+    ]
+    if q_maps_path:
+        capsule_pts = []
+        for q_map in [q_maps_path[0], q_maps_path[-1]]:
+            for seg in arm_model.capsule_segments(q_map):
+                capsule_pts.extend([seg.p1, seg.p2])
+        if capsule_pts:
+            bounds_pts.append(np.asarray(capsule_pts, dtype=float))
+    _set_demo_axes(ax, scenario.scene, *bounds_pts)
 
     anim_dists = np.array(
         [

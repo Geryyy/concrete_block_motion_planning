@@ -14,10 +14,35 @@ from .types import StandaloneScenario
 # Joint order: [theta1, theta2, theta3, q4, theta8]
 # ---------------------------------------------------------------------------
 
-# Hover positions (z ≈ -2.87 m — TCP high above table)
-_Q_HOVER_CENTER = (0.05,  -0.80,  0.55, 0.40, -0.05)   # FK → (0.841, 0.046, -2.874)
+# Hover positions / live reduced-state seeds
+_Q_HOVER_CENTER = (
+    0.38024054715340927,
+    0.9565408595950765,
+    -0.040579164841686555,
+    0.8338932389503255,
+    0.3806049296978129,
+)
 _Q_HOVER_RIGHT  = (0.25,  -0.80,  0.55, 0.40, -0.25)   # FK → (0.814, 0.224, -2.874)
 _Q_HOVER_LEFT   = (-0.15, -0.80,  0.55, 0.40,  0.15)   # FK → (0.832, -0.133, -2.874)
+
+_SEED_HOVER_CENTER = {
+    "theta1_slewing_joint": 0.38024054715340927,
+    "theta2_boom_joint": 0.9565408595950765,
+    "theta3_arm_joint": -0.040579164841686555,
+    "q4_big_telescope": 0.8338932389503255,
+    "q5_small_telescope": 0.8338930236300697,
+    "theta6_tip_joint": 0.657893017309523,
+    "theta7_tilt_joint": 1.5688597113914138,
+    "theta8_rotator_joint": 0.3806049296978129,
+    "q9_left_rail_joint": 0.12743247359692678,
+    "q11_right_rail_joint": 0.12616460541255148,
+    "boom_cylinder_piston_in_barrel_linear_joint": 0.8392658503881173,
+    "arm_cylinder_piston_in_barrel_linear_joint_left": 1.5979882218139059,
+    "arm_cylinder_piston_in_barrel_linear_joint_right": 1.5979857693368893,
+    "boom_cylinder_linkage_big_mounting_on_slewing_column": 0.583383493627514,
+    "boom_cylinder_linkage_small_mounting_on_boom": -0.4082427016850132,
+    "boom_cylinder_mounting_on_slewing_column": 0.03839729926304631,
+}
 
 # Placement positions (z ≈ -3.65 m — TCP at table/block surface)
 _Q_GOAL_CENTER = (0.05,  -0.92,  0.68, 0.65, -0.05)    # FK → (0.443,  0.026, -3.647)
@@ -66,6 +91,7 @@ _CURATED_SCENARIOS: tuple[StandaloneScenario, ...] = (
         start_approach_direction_world=_unit((0.781 - _XYZ_HOVER_CENTER[0], 0.146 - _XYZ_HOVER_CENTER[1], -2.874 - _XYZ_HOVER_CENTER[2])),
         goal_approach_direction_world=(0.0, 0.0, -1.0),
         planner_start_q=_Q_HOVER_CENTER,
+        planner_start_q_seed_map=_SEED_HOVER_CENTER,
         planner_goal_q=(0.17, -0.80, 0.55, 0.40, -0.17),
         anchor_count=6,
     ),
@@ -79,6 +105,7 @@ _CURATED_SCENARIOS: tuple[StandaloneScenario, ...] = (
         start_approach_direction_world=_unit((_XYZ_HOVER_LEFT[0] - _XYZ_HOVER_CENTER[0], _XYZ_HOVER_LEFT[1] - _XYZ_HOVER_CENTER[1], _XYZ_HOVER_LEFT[2] - _XYZ_HOVER_CENTER[2])),
         goal_approach_direction_world=(0.0, 0.0, -1.0),
         planner_start_q=_Q_HOVER_CENTER,
+        planner_start_q_seed_map=_SEED_HOVER_CENTER,
         planner_goal_q=_Q_HOVER_LEFT,
         anchor_count=6,
     ),
@@ -92,6 +119,7 @@ _CURATED_SCENARIOS: tuple[StandaloneScenario, ...] = (
         start_approach_direction_world=_unit((_XYZ_GOAL_CENTER[0] - _XYZ_HOVER_CENTER[0], _XYZ_GOAL_CENTER[1] - _XYZ_HOVER_CENTER[1], _XYZ_GOAL_CENTER[2] - _XYZ_HOVER_CENTER[2])),
         goal_approach_direction_world=(0.0, 0.0, -1.0),
         planner_start_q=_Q_HOVER_CENTER,
+        planner_start_q_seed_map=_SEED_HOVER_CENTER,
         planner_goal_q=_Q_GOAL_CENTER,
         anchor_count=6,
         overlay_scene_name="step_01_first_on_ground",
@@ -106,6 +134,7 @@ _CURATED_SCENARIOS: tuple[StandaloneScenario, ...] = (
         start_approach_direction_world=_unit((0.781 - _XYZ_HOVER_CENTER[0], 0.146 - _XYZ_HOVER_CENTER[1], -2.874 - _XYZ_HOVER_CENTER[2])),
         goal_approach_direction_world=(0.0, 0.0, -1.0),
         planner_start_q=_Q_HOVER_CENTER,
+        planner_start_q_seed_map=_SEED_HOVER_CENTER,
         planner_goal_q=(0.17, -0.80, 0.55, 0.40, -0.17),
         anchor_count=6,
         overlay_scene_name="step_01_first_on_ground",
@@ -151,6 +180,7 @@ def make_default_scenarios() -> dict[str, StandaloneScenario]:
                 goal_approach_direction_world=tuple(float(v) for v in cfg.goal_approach_direction),
                 planner_start_q=q_start,
                 planner_goal_q=q_goal,
+                planner_start_q_seed_map=_SEED_HOVER_CENTER if q_start == _Q_HOVER_CENTER else None,
                 anchor_count=6,
                 overlay_scene_name=scene_name,
             )

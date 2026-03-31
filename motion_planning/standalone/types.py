@@ -18,6 +18,8 @@ class StandaloneScenario:
     goal_approach_direction_world: tuple[float, float, float] = (0.0, 0.0, -1.0)
     planner_start_q: tuple[float, ...] | None = None
     planner_goal_q: tuple[float, ...] | None = None
+    planner_start_q_seed_map: dict[str, float] | None = None
+    planner_goal_q_seed_map: dict[str, float] | None = None
     anchor_count: int = 6
     overlay_scene_name: str | None = None
     overlay_scene_translation: tuple[float, float, float] | None = None

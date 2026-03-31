@@ -16,6 +16,8 @@ class StandalonePlanningContext:
     actuated_joint_names: tuple[str, ...]
     q_start: np.ndarray
     q_goal: np.ndarray
+    q_start_seed_map: dict[str, float]
+    q_goal_seed_map: dict[str, float]
 
 
 def fail_result(
@@ -51,13 +53,21 @@ def build_planning_context(
     )
     actuated_joint_names = tuple(str(name) for name in stage.config.actuated_joints)
 
+    def _complete_seed(q_red: np.ndarray, q_seed: dict[str, float]) -> dict[str, float]:
+        solved = stage._steady_state.complete_from_actuated(
+            {name: float(q_red[i]) for i, name in enumerate(actuated_joint_names)},
+            q_seed=q_seed,
+        )
+        return dict(solved.q_dynamic) if solved.success else dict(q_seed)
+
     q_start: np.ndarray | None = None
     start_seed: dict[str, float] = {}
     if scenario.planner_start_q is not None:
         q_start = np.asarray(scenario.planner_start_q, dtype=float)
-        start_seed = {
+        start_seed = dict(scenario.planner_start_q_seed_map or {
             name: float(q_start[i]) for i, name in enumerate(actuated_joint_names)
-        }
+        })
+        start_seed = _complete_seed(q_start, start_seed)
     else:
         start_solve = stage.solve_world_pose(
             goal_world=scenario.start_world_xyz,
@@ -78,6 +88,8 @@ def build_planning_context(
 
     if scenario.planner_goal_q is not None:
         q_goal = np.asarray(scenario.planner_goal_q, dtype=float)
+        goal_seed = dict(scenario.planner_goal_q_seed_map or start_seed)
+        goal_seed = _complete_seed(q_goal, goal_seed)
     else:
         goal_solve = stage.solve_world_pose(
             goal_world=scenario.goal_world_xyz,
@@ -94,6 +106,7 @@ def build_planning_context(
             [goal_solve.q_actuated.get(name, 0.0) for name in actuated_joint_names],
             dtype=float,
         )
+        goal_seed = dict(goal_solve.q_dynamic)
 
     if q_start is None:
         return fail_result(
@@ -108,6 +121,8 @@ def build_planning_context(
         actuated_joint_names=actuated_joint_names,
         q_start=q_start,
         q_goal=q_goal,
+        q_start_seed_map=start_seed,
+        q_goal_seed_map=goal_seed,
     )
 
 

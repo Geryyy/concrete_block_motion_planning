@@ -32,6 +32,8 @@ def plan_joint_space_global_path(scenario: StandaloneScenario) -> StandalonePlan
             moving_block_size=_moving_block_size_for_scenario(scenario),
             q_start=planning.q_start,
             q_goal=planning.q_goal,
+            q_start_seed_map=planning.q_start_seed_map,
+            q_goal_seed_map=planning.q_goal_seed_map,
             start_approach_direction_world=scenario.start_approach_direction_world,
             goal_approach_direction_world=scenario.goal_approach_direction_world,
         )

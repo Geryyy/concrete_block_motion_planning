@@ -28,6 +28,8 @@ class JointSpaceGlobalPathRequest:
     q_goal: np.ndarray
     start_approach_direction_world: tuple[float, float, float]
     goal_approach_direction_world: tuple[float, float, float]
+    q_start_seed_map: Mapping[str, float] | None = None
+    q_goal_seed_map: Mapping[str, float] | None = None
     config: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -53,7 +55,9 @@ class JointSpaceGlobalPathPlanner:
             return JointSpaceGlobalPathResult(False, "start/goal joint dimensions do not match", z((0, q0.size)), z((0, q0.size)), z((0, 3)), z(0), {})
         c = {"sample_count": 31, "maxiter": 60, "safety_margin": 0.03, "approach_step_m": 0.08, "w_length": 1.0, "w_smooth": 0.25, "w_collision": 80.0, "w_penetration": 400.0, "w_approach": 20.0, **dict(req.config)}
         d0, dN = _n(req.start_approach_direction_world), _n(req.goal_approach_direction_world)
-        q1, q2 = self._step(q0, d0, c["approach_step_m"]), self._step(qN, -dN, c["approach_step_m"])
+        s0 = None if req.q_start_seed_map is None else dict(req.q_start_seed_map)
+        sN = None if req.q_goal_seed_map is None else dict(req.q_goal_seed_map)
+        q1, q2 = self._step(q0, d0, c["approach_step_m"], s0), self._step(qN, -dN, c["approach_step_m"], sN)
         x0 = np.vstack([(2 * q1 + q2) / 3, (q1 + 2 * q2) / 3]).reshape(-1)
         lo, hi = zip(*[(self.jsp._joint_position_limits.get(n, (None, None))[0], self.jsp._joint_position_limits.get(n, (None, None))[1]) for _ in range(2) for n in self.names])
         bounds = Bounds(np.array([-np.inf if v is None else float(v) for v in lo]), np.array([np.inf if v is None else float(v) for v in hi]))
@@ -62,11 +66,12 @@ class JointSpaceGlobalPathPlanner:
             a = self._clip(np.vstack([q0, np.asarray(x, float).reshape(2, -1), qN])); a[0], a[-1] = q0, qN
             q = self._clip(self.jsp._fit_joint_spline(u_anchor=self.jsp._parameterize_waypoints(a), q_anchor=a, u_query=np.linspace(0.0, 1.0, max(5, int(c["sample_count"])))))
             q[0], q[-1] = q0, qN
-            xyz, yaw, maps, via_xyz, seed = [], [], [], [], {n: float(q0[i]) for i, n in enumerate(self.names)}
+            xyz, yaw, maps, via_xyz = [], [], [], []
+            seed = dict(s0) if s0 is not None else {n: float(q0[i]) for i, n in enumerate(self.names)}
             for qi in q:
                 xi, yi, seed = self.jsp.fk_world_pose(qi, q_seed=seed)
                 xyz.append(xi); yaw.append(yi); maps.append(dict(seed))
-            seed = {n: float(q0[i]) for i, n in enumerate(self.names)}
+            seed = dict(s0) if s0 is not None else {n: float(q0[i]) for i, n in enumerate(self.names)}
             for qi in a[1:-1]:
                 xi, _, seed = self.jsp.fk_world_pose(qi, q_seed=seed)
                 via_xyz.append(xi)
@@ -85,9 +90,9 @@ class JointSpaceGlobalPathPlanner:
         r, success = best["r"], ok(best["r"], -1e-3)
         return JointSpaceGlobalPathResult(success, f"joint-space global via-2 path {'ok' if success else 'needs review'}: min clearance={r['min_d']:+.3f} m", np.asarray(r["q"], float), np.asarray(r["vias"], float), np.asarray(r["xyz"], float), np.asarray(r["yaw"], float), {"via_point_count": 2.0, "optimizer_success": bool(True if opt is None else opt.success), "optimizer_iterations": float(0 if opt is None else getattr(opt, "nit", 0) or 0), "objective_final": float(r["j"]), "min_signed_distance_m": float(r["min_d"]), "mean_signed_distance_m": float(r["mean_d"]), "path_length_joint": float(r["len"]), "smoothness_cost": float(r["smooth"]), "start_approach_alignment_deg": float(r["a0"]), "goal_approach_alignment_deg": float(r["aN"]), "q_maps_path": list(r["maps"]), "via_points": np.asarray(r["vias"], float), "via_tcp_xyz": np.asarray(r["via_xyz"], float), "reference_path_backend": "joint_space_global_via2", "reference_path_fallback_used": 0.0, "joint_anchor_fallback_used": 0.0})
 
-    def _step(self, q: np.ndarray, direction: np.ndarray, step_m: float) -> np.ndarray:
+    def _step(self, q: np.ndarray, direction: np.ndarray, step_m: float, q_seed: Mapping[str, float] | None = None) -> np.ndarray:
         q = np.asarray(q, float).reshape(-1)
-        xyz0, _, seed = self.jsp.fk_world_pose(q)
+        xyz0, _, seed = self.jsp.fk_world_pose(q, q_seed=q_seed)
         J = np.zeros((3, q.size), float)
         for j in range(q.size):
             q1 = q.copy(); q1[j] += 1e-4

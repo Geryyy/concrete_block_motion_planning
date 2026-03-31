@@ -26,6 +26,15 @@ class _CapsuleDef:
 
 
 @dataclass(frozen=True)
+class _LinkCapsuleDef:
+    name: str
+    frame: str
+    p1_local: np.ndarray
+    p2_local: np.ndarray
+    radius: float
+
+
+@dataclass(frozen=True)
 class CapsuleSegment:
     name: str
     p1_frame: str
@@ -53,17 +62,39 @@ class ArmPathClearanceReport:
         )
 
 
-_CAPSULES: tuple[_CapsuleDef, ...] = (
-    _CapsuleDef("K0_mounting_base", "K1_slewing_column", 0.15),
-    _CapsuleDef("K1_slewing_column", "K2_boom", 0.14),
-    _CapsuleDef("K2_boom", "K3_arm", 0.10),
-    _CapsuleDef("K3_arm", "K5_inner_telescope", 0.08),
-    _CapsuleDef("K1_boom_cylinder_suspension", "boom_cylinder_piston", 0.06),
-    _CapsuleDef("K5_inner_telescope", "K6_double_joint_link", 0.05),
-    _CapsuleDef("K6_double_joint_link", "K8_tool_center_point", 0.08),
-    _CapsuleDef("K11", "K9", 0.06),
-    _CapsuleDef("K9", "K10_left_rail", 0.08),
-    _CapsuleDef("K11", "K12_right_rail", 0.08),
+_LINK_CAPSULES: tuple[_LinkCapsuleDef, ...] = (
+    _LinkCapsuleDef(
+        "K1_slewing_column_body",
+        "K1_slewing_column",
+        np.array([0.199, -1.906, 0.0], dtype=float),
+        np.array([-0.028, 0.081, 0.0], dtype=float),
+        0.206,
+    ),
+    _LinkCapsuleDef(
+        "K2_boom_body",
+        "K2_boom",
+        np.array([-3.332, 0.190, 0.0], dtype=float),
+        np.array([-0.706, -0.117, 0.0], dtype=float),
+        0.246,
+    ),
+    _LinkCapsuleDef(
+        "K3_arm_body",
+        "K3_arm",
+        np.array([0.363, -0.028, -0.075], dtype=float),
+        np.array([0.312, 0.008, 2.963], dtype=float),
+        0.213,
+    ),
+    _LinkCapsuleDef(
+        "K5_inner_telescope_body",
+        "K5_inner_telescope",
+        np.array([0.280, 2.953, 0.0], dtype=float),
+        np.array([0.176, -0.055, 0.0], dtype=float),
+        0.186,
+    ),
+)
+
+_FRAME_CAPSULES: tuple[_CapsuleDef, ...] = (
+    _CapsuleDef("K6_double_joint_link", "K8_tool_center_point", 0.18),
 )
 
 DEFAULT_PZS100_RAIL_POSITION_M: float = 0.538
@@ -202,6 +233,12 @@ class CraneArmCollisionModel:
     def _frame_pos(self, q_map: Dict[str, float], frame_name: str) -> np.ndarray:
         return np.asarray(self._frame_tf(q_map, frame_name)[:3, 3], dtype=float)
 
+    def _point_in_frame(self, q_map: Dict[str, float], frame_name: str, xyz_local: np.ndarray) -> np.ndarray:
+        tf = np.asarray(self._frame_tf(q_map, frame_name), dtype=float)
+        p = np.ones(4, dtype=float)
+        p[:3] = np.asarray(xyz_local, dtype=float).reshape(3)
+        return np.asarray((tf @ p)[:3], dtype=float)
+
     def _frame_tf(self, q_map: Dict[str, float], frame_name: str) -> np.ndarray:
         from motion_planning.mechanics.analytic.pinocchio_utils import fk_homogeneous
 
@@ -236,7 +273,18 @@ class CraneArmCollisionModel:
 
     def capsule_segments(self, q_map: Dict[str, float]) -> list[CapsuleSegment]:
         self._ensure_loaded()
-        return [
+        segs = [
+            CapsuleSegment(
+                name=cap.name,
+                p1_frame=cap.frame,
+                p2_frame=cap.frame,
+                radius=float(cap.radius),
+                p1=self._point_in_frame(q_map, cap.frame, cap.p1_local),
+                p2=self._point_in_frame(q_map, cap.frame, cap.p2_local),
+            )
+            for cap in _LINK_CAPSULES
+        ]
+        segs.extend([
             CapsuleSegment(
                 name=f"{cap.p1_frame}->{cap.p2_frame}",
                 p1_frame=cap.p1_frame,
@@ -245,8 +293,9 @@ class CraneArmCollisionModel:
                 p1=self._frame_pos(q_map, cap.p1_frame),
                 p2=self._frame_pos(q_map, cap.p2_frame),
             )
-            for cap in _CAPSULES
-        ]
+            for cap in _FRAME_CAPSULES
+        ])
+        return segs
 
     def clearance(
         self,

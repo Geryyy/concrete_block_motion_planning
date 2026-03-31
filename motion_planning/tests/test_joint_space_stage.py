@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from motion_planning.pipeline import JointGoalStage, JointSpaceCartesianPlanner
+from motion_planning.scenarios import ScenarioLibrary
 from motion_planning.trajectory.planning_limits import load_planning_limits_yaml
 
 
@@ -22,13 +23,19 @@ def test_joint_space_cartesian_planner_tracks_reference_between_feasible_endpoin
     )
     joint_limits, _ = load_planning_limits_yaml(planning_limits)
 
+    scenario = ScenarioLibrary().build_scenario("step_01_first_on_ground")
+    reachable_goal = (
+        float(scenario.start[0]),
+        float(scenario.start[1] + 0.20),
+        float(scenario.start[2]),
+    )
     start = stage.solve_world_pose(
-        goal_world=(-10.97, -3.70, 2.16),
-        target_yaw_rad=-np.pi,
+        goal_world=scenario.start,
+        target_yaw_rad=np.deg2rad(float(scenario.start_yaw_deg)),
     )
     goal = stage.solve_world_pose(
-        goal_world=(-11.00, -1.72, 2.59),
-        target_yaw_rad=-np.pi,
+        goal_world=reachable_goal,
+        target_yaw_rad=np.deg2rad(float(scenario.start_yaw_deg)),
     )
     assert start.success, start.message
     assert goal.success, goal.message
@@ -45,8 +52,8 @@ def test_joint_space_cartesian_planner_tracks_reference_between_feasible_endpoin
     q_start = _reduced_q(start, joint_names)
     q_goal = _reduced_q(goal, joint_names)
     alpha = np.linspace(0.0, 1.0, 6, dtype=float).reshape(-1, 1)
-    reference_xyz = (1.0 - alpha) * start.goal_world.reshape(1, 3) + alpha * goal.goal_world.reshape(1, 3)
-    reference_yaw = np.full(6, -np.pi, dtype=float)
+    reference_xyz = (1.0 - alpha) * start.goal_world.reshape(1, 3) + alpha * np.asarray(reachable_goal, dtype=float).reshape(1, 3)
+    reference_yaw = np.full(6, np.deg2rad(float(scenario.start_yaw_deg)), dtype=float)
 
     result = planner.plan(
         q_start=q_start,

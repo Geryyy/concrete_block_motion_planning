@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from motion_planning.planners.base import Planner
-from motion_planning.planners.spline import SplineOptimizerPlanner
+from motion_planning.planners.joint_path import JointSpaceStage1Planner
 
 _METHODS = {
     "POWELL": "Powell",
@@ -20,4 +20,4 @@ def create_planner(method: str) -> Planner:
         raise ValueError(
             f"Unsupported planner '{method}'. Supported: {', '.join(sorted(set(_METHODS.values())))}"
         )
-    return SplineOptimizerPlanner(method=_METHODS[key])
+    return JointSpaceStage1Planner(method=_METHODS[key])

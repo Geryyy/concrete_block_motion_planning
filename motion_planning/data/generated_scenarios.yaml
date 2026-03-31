@@ -1,8 +1,8 @@
 defaults:
   base_size:
-    - 0.15
-    - 0.10
-    - 0.10
+    - 0.9
+    - 0.6
+    - 0.65
 
 # CBS crane standalone scenarios — K0_mounting_base frame.
 # K0 is the crane mounting base (top of mast). Arm extends in -z direction.
@@ -27,6 +27,30 @@ defaults:
 #   table top surface: z = -3.70  →  block centre: z = -3.65
 
 scenarios:
+  pzs100_live_block_2_top:
+    blocks:
+      - id: block_1
+        size: [0.9, 0.6, 0.65]
+        position: [5.0, 0.5, -0.8]
+      - id: block_2
+        size: [0.9, 0.6, 0.65]
+        position: [5.0, -1.0, -0.8]
+    moving_block:
+      size: [0.9, 0.6, 0.65]
+      start: [4.2, -1.0, 0.3]
+      start_yaw_deg: 0.0
+      goal_yaw_deg: 0.0
+      goal:
+        type: face
+        base: block_2
+        face: top
+        gap: 0.0
+        tangential_offset: [0.0, 0.0]
+        size: [0.9, 0.6, 0.65]
+      goal_normals:
+        - [0.0, 0.0, 1.0]
+      approach_direction: [0.0, 0.0, -1.0]
+
   step_01_first_on_ground:
     blocks:
       - id: table

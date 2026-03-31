@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Tuple
+
+_PKG_ROOT = Path(__file__).resolve().parents[1]
+if str(_PKG_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PKG_ROOT))
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -28,6 +33,17 @@ from motion_planning_tools.benchmark.metrics import (
 DEFAULT_SCENARIOS_FILE = Path(__file__).with_name("data").joinpath("generated_scenarios.yaml")
 DEFAULT_OPTIMIZED_PARAMS_FILE = Path(__file__).with_name("data").joinpath("optimized_params.yaml")
 _LAST_ANIMATION: FuncAnimation | None = None
+
+
+def _make_straight_curve_sampler(start_xyz: np.ndarray, goal_xyz: np.ndarray) -> Callable[[np.ndarray], np.ndarray]:
+    start = np.asarray(start_xyz, dtype=float).reshape(3)
+    goal = np.asarray(goal_xyz, dtype=float).reshape(3)
+
+    def _sample(uq: np.ndarray) -> np.ndarray:
+        u = np.asarray(uq, dtype=float).reshape(-1, 1)
+        return (1.0 - u) * start.reshape(1, 3) + u * goal.reshape(1, 3)
+
+    return _sample
 
 
 def _import_vpsto():
@@ -241,6 +257,7 @@ def _plan_spline_method(
     info["success"] = bool(p_res.success)
     info["message"] = str(p_res.message)
     info["nit"] = int(p_res.diagnostics.get("nit", 0))
+    info["diagnostics"] = dict(p_res.diagnostics)
     if p_res.path.yaw_fn is not None:
         info["yaw_fn"] = p_res.path.yaw_fn
     return p_res.path.xyz_fn, np.empty((0, 3), dtype=float), info
@@ -408,11 +425,45 @@ def _box_faces(vertices: np.ndarray) -> list[list[np.ndarray]]:
     ]
 
 
+def _draw_capsule_segments(ax, segments, *, color: str, alpha: float, label: str | None = None) -> None:
+    first = True
+    for seg in segments:
+        p1 = np.asarray(seg.p1, dtype=float)
+        p2 = np.asarray(seg.p2, dtype=float)
+        ax.plot(
+            [p1[0], p2[0]],
+            [p1[1], p2[1]],
+            [p1[2], p2[2]],
+            color=color,
+            alpha=alpha,
+            lw=max(1.5, 16.0 * float(seg.radius)),
+            solid_capstyle="round",
+            label=label if first else None,
+        )
+        first = False
+
+
+def _draw_approach_arrow(ax, origin: np.ndarray, direction: np.ndarray, length: float, *, color: str, label: str) -> None:
+    d = _normalize(direction)
+    ax.quiver(
+        float(origin[0]),
+        float(origin[1]),
+        float(origin[2]),
+        float(d[0]),
+        float(d[1]),
+        float(d[2]),
+        length=float(length),
+        color=color,
+        linewidth=2.5,
+    )
+    ax.plot([], [], [], color=color, lw=2.5, label=label)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Visual 3D demo for geometric planning scenarios.")
     parser.add_argument(
         "--scenario",
-        default="step_02_second_in_front",
+        default="pzs100_live_block_2_top",
         help="Scenario name to run.",
     )
     parser.add_argument(
@@ -447,11 +498,18 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Optional path to save the rendered figure.",
     )
+    parser.add_argument(
+        "--scene-only",
+        action="store_true",
+        help="Skip planning and show a straight scene-aligned reference path only.",
+    )
     return parser
 
 
 def main() -> None:
     global _LAST_ANIMATION
+    from motion_planning.geometry.arm_model import CraneArmCollisionModel
+
     args = build_parser().parse_args()
     lib = ScenarioLibrary(args.scenarios_file)
     scenario_names = lib.list_scenarios()
@@ -462,34 +520,61 @@ def main() -> None:
     scenario = lib.build_scenario(args.scenario)
 
     t_start = time.time()
-    if _is_cbs_stack(args.planner):
-        planner_method = args.planner.lower().replace("-", "_")
-        planner_cfg: Dict[str, Any] = {"goal_approach_window_fraction": 0.1, "contact_window_fraction": 0.1}
-        curve_sampler, vias_opt, info = _plan_cbs_stack(planner_method, args.scenario)
-    else:
-        planner_method, planner_cfg, planner_options = _planner_entry(
-            method=args.planner,
-            optimized_params_file=Path(args.optimized_params_file),
-        )
-        if planner_method in {"Powell", "CEM", "Nelder-Mead"}:
-            curve_sampler, vias_opt, info = _plan_spline_method(
-                planner_method=planner_method,
-                planner_cfg=planner_cfg,
-                planner_options=planner_options,
-                scenario=scenario,
-            )
-        elif planner_method == "VP-STO":
-            curve_sampler, vias_opt, info = _plan_vpsto(
-                scenario=scenario,
-                planner_cfg=planner_cfg,
-                planner_options=planner_options,
-            )
+    planner_method = args.planner
+    try:
+        if args.scene_only:
+            planner_method = "scene-only"
+            planner_cfg = {"goal_approach_window_fraction": 0.1, "contact_window_fraction": 0.1}
+            curve_sampler = _make_straight_curve_sampler(np.asarray(scenario.start, dtype=float), np.asarray(scenario.goal, dtype=float))
+            vias_opt = np.empty((0, 3), dtype=float)
+            info = {
+                "success": True,
+                "message": "Scene-only visualization using live world-model values.",
+                "yaw_fn": _make_linear_yaw_fn(float(scenario.start_yaw_deg), float(scenario.goal_yaw_deg)),
+                "planner_fallback": True,
+            }
+        elif _is_cbs_stack(args.planner):
+            planner_method = args.planner.lower().replace("-", "_")
+            planner_cfg = {"goal_approach_window_fraction": 0.1, "contact_window_fraction": 0.1}
+            curve_sampler, vias_opt, info = _plan_cbs_stack(planner_method, args.scenario)
         else:
-            curve_sampler, vias_opt, info = _plan_rrt(
-                scenario=scenario,
-                planner_cfg=planner_cfg,
-                planner_options=planner_options,
+            planner_method, planner_cfg, planner_options = _planner_entry(
+                method=args.planner,
+                optimized_params_file=Path(args.optimized_params_file),
             )
+            if planner_method in {"Powell", "CEM", "Nelder-Mead"}:
+                curve_sampler, vias_opt, info = _plan_spline_method(
+                    planner_method=planner_method,
+                    planner_cfg=planner_cfg,
+                    planner_options=planner_options,
+                    scenario=scenario,
+                )
+            elif planner_method == "VP-STO":
+                curve_sampler, vias_opt, info = _plan_vpsto(
+                    scenario=scenario,
+                    planner_cfg=planner_cfg,
+                    planner_options=planner_options,
+                )
+            else:
+                curve_sampler, vias_opt, info = _plan_rrt(
+                    scenario=scenario,
+                    planner_cfg=planner_cfg,
+                    planner_options=planner_options,
+                )
+        if not args.scene_only:
+            info["planner_fallback"] = False
+    except Exception as exc:
+        planner_method = f"{planner_method} (fallback)"
+        planner_cfg = {"goal_approach_window_fraction": 0.1, "contact_window_fraction": 0.1}
+        curve_sampler = _make_straight_curve_sampler(np.asarray(scenario.start, dtype=float), np.asarray(scenario.goal, dtype=float))
+        vias_opt = np.empty((0, 3), dtype=float)
+        info = {
+            "success": False,
+            "message": f"Planner failed, showing straight-line fallback: {exc}",
+            "yaw_fn": _make_linear_yaw_fn(float(scenario.start_yaw_deg), float(scenario.goal_yaw_deg)),
+            "planner_fallback": True,
+        }
+        print(info["message"])
     opt_duration = time.time() - t_start
     print(f"Optimization took {opt_duration:.2f} seconds")
 
@@ -502,6 +587,7 @@ def main() -> None:
 
     u = np.linspace(0.0, 1.0, max(10, int(args.samples)))
     curve = curve_sampler(u)
+    diagnostics = dict(info.get("diagnostics", {}))
     goal_normals = np.asarray(scenario.goal_normals, dtype=float)
     v_approach, summed_normal, desired_approach = _approach_alignment_vectors(
         curve=curve,
@@ -514,11 +600,21 @@ def main() -> None:
         f"Approach alignment angle: {align_angle_deg:.2f} deg "
         f"(0 deg means perfectly aligned with -summed surface normals)"
     )
+    if info.get("planner_fallback", False):
+        print("Using fallback visualization path because the planner did not solve this live scene yet.")
+    if diagnostics.get("combined_min_clearance_m") is not None:
+        print(
+            "Capsule clearance summary: "
+            f"arm={float(diagnostics.get('arm_min_clearance_m', np.nan)):+.3f} m, "
+            f"payload={float(diagnostics.get('payload_min_clearance_m', np.nan)):+.3f} m, "
+            f"combined={float(diagnostics.get('combined_min_clearance_m', np.nan)):+.3f} m"
+        )
 
     fig = plt.figure(figsize=(13, 5.5))
     ax = fig.add_subplot(1, 2, 1, projection="3d")
     ax = plot_scene(scenario.scene, ax=ax, start=scenario.start, goal=scenario.goal)
-    ax.plot(curve[:, 0], curve[:, 1], curve[:, 2], "k-", lw=2, label=f"C2 B-spline ({planner_method})")
+    ax.plot(curve[:, 0], curve[:, 1], curve[:, 2], "k-", lw=2, label=f"TCP path ({planner_method})")
+    ax.set_title("Stage-1 Planner in K0_mounting_base")
 
     for i, vp in enumerate(vias_opt):
         ax.scatter(*vp, s=30, label=f"v{i + 1} (opt)")
@@ -528,36 +624,58 @@ def main() -> None:
     for n in goal_normals:
         nn = _normalize(np.asarray(n, dtype=float))
         ax.quiver(g[0], g[1], g[2], nn[0], nn[1], nn[2], length=normal_len, color="deepskyblue", linewidth=2.0)
-    ax.quiver(
-        g[0],
-        g[1],
-        g[2],
-        summed_normal[0],
-        summed_normal[1],
-        summed_normal[2],
-        length=normal_len,
-        color="magenta",
-        linewidth=2.5,
-    )
-    ax.quiver(
-        g[0],
-        g[1],
-        g[2],
-        v_approach[0],
-        v_approach[1],
-        v_approach[2],
-        length=normal_len,
-        color="red",
-        linewidth=2.5,
-    )
+    _draw_approach_arrow(ax, g, summed_normal, normal_len, color="magenta", label="resultant normal (sum normals)")
+    _draw_approach_arrow(ax, g, desired_approach, normal_len, color="darkorange", label="requested approach direction")
+    _draw_approach_arrow(ax, g, v_approach, normal_len, color="red", label="realized approach direction")
     ax.plot([], [], [], color="deepskyblue", lw=2, label="surface normals @ goal")
-    ax.plot([], [], [], color="magenta", lw=2, label="resultant normal (sum normals)")
-    ax.plot([], [], [], color="red", lw=2, label="actual approach direction")
 
     anim_u = np.linspace(0.0, 1.0, max(20, int(args.animation_frames)))
     anim_pts = curve_sampler(anim_u)
     yaw_fn = info["yaw_fn"]
     anim_yaw = np.asarray(yaw_fn(anim_u), dtype=float)
+    arm_model = CraneArmCollisionModel()
+    q_maps_path = diagnostics.get("q_maps_path", [])
+    if q_maps_path:
+        dense_u = np.linspace(0.0, 1.0, len(q_maps_path), dtype=float)
+        tcp_xyz_dense = np.asarray(diagnostics["tcp_xyz_path"], dtype=float)
+        tcp_yaw_dense = np.asarray(diagnostics["tcp_yaw_path_rad"], dtype=float).reshape(-1)
+        arm_clear_dense = np.asarray(
+            [arm_model.clearance(q_map, scenario.scene, ignore_ids=["table"]) for q_map in q_maps_path],
+            dtype=float,
+        )
+        payload_clear_dense = np.asarray(
+            [
+                arm_model.payload_clearance(
+                    tcp_xyz_dense[i],
+                    float(tcp_yaw_dense[i]),
+                    scenario.moving_block_size,
+                    scenario.scene,
+                )
+                for i in range(len(q_maps_path))
+            ],
+            dtype=float,
+        )
+        combined_clear_dense = np.minimum(arm_clear_dense, payload_clear_dense)
+        arm_clear_anim = np.interp(anim_u, dense_u, arm_clear_dense)
+        combined_clear_anim = np.interp(anim_u, dense_u, combined_clear_dense)
+        _draw_capsule_segments(
+            ax,
+            arm_model.capsule_segments(q_maps_path[0]),
+            color="royalblue",
+            alpha=0.30,
+            label="crane capsules (start)",
+        )
+        _draw_capsule_segments(
+            ax,
+            arm_model.capsule_segments(q_maps_path[-1]),
+            color="forestgreen",
+            alpha=0.30,
+            label="crane capsules (goal)",
+        )
+    else:
+        arm_clear_anim = np.full(anim_u.shape, np.nan, dtype=float)
+        combined_clear_anim = np.full(anim_u.shape, np.nan, dtype=float)
+
     anim_dists = np.array(
         [
             scenario.scene.signed_distance_block(
@@ -588,16 +706,19 @@ def main() -> None:
     anim_dists_eval_plot[eval_mask] = anim_dists[eval_mask]
 
     ax_clear = fig.add_subplot(1, 2, 2)
-    ax_clear.plot(anim_u, anim_dists, "b-", lw=2, label="signed distance (raw)")
-    ax_clear.plot(anim_u, anim_dists_eval_plot, "k--", lw=2, label="signed distance (evaluated)")
+    ax_clear.plot(anim_u, anim_dists, "b-", lw=1.5, label="payload clearance (raw)")
+    ax_clear.plot(anim_u, anim_dists_eval_plot, "k--", lw=1.5, label="payload clearance (evaluated)")
+    if np.any(np.isfinite(arm_clear_anim)):
+        ax_clear.plot(anim_u, arm_clear_anim, color="purple", lw=2.0, label="arm capsule clearance")
+        ax_clear.plot(anim_u, combined_clear_anim, color="green", lw=2.0, label="combined clearance")
     ax_clear.axhline(0.0, color="r", lw=1, ls="--", label="collision boundary")
     ax_clear.axhline(info["preferred_clearance"], color="orange", lw=1, ls="--", label="preferred clearance")
     if info.get("approach_only_clearance") is not None:
         ax_clear.axhline(info["approach_only_clearance"], color="green", lw=1, ls="--", label="approach clearance")
-    clear_marker, = ax_clear.plot([anim_u[0]], [anim_dists[0]], "ko", ms=6)
+    clear_marker, = ax_clear.plot([anim_u[0]], [combined_clear_anim[0] if np.isfinite(combined_clear_anim[0]) else anim_dists[0]], "ko", ms=6)
     ax_clear.set_xlabel("path parameter u")
     ax_clear.set_ylabel("signed distance [m]")
-    ax_clear.set_title("Block Clearance Along Path")
+    ax_clear.set_title("Clearance Along Path")
     ax_clear.grid(True, alpha=0.3)
     ax_clear.legend(loc="best")
 
@@ -617,12 +738,16 @@ def main() -> None:
     def _update(frame_idx: int):
         p = anim_pts[frame_idx]
         dist = float(anim_dists[frame_idx])
+        arm_dist = float(arm_clear_anim[frame_idx]) if np.isfinite(arm_clear_anim[frame_idx]) else float("nan")
+        combined_dist = float(combined_clear_anim[frame_idx]) if np.isfinite(combined_clear_anim[frame_idx]) else dist
         vv = _box_vertices(p, scenario.moving_block_size, float(anim_yaw[frame_idx]))
         moving_poly.set_verts(_box_faces(vv))
-        moving_poly.set_facecolor(_frame_color(dist))
+        moving_poly.set_facecolor(_frame_color(combined_dist))
         moving_center._offsets3d = ([p[0]], [p[1]], [p[2]])
-        dist_text.set_text(f"clearance: {dist:+.3f} m, yaw: {anim_yaw[frame_idx]:+.1f} deg")
-        clear_marker.set_data([anim_u[frame_idx]], [dist])
+        dist_text.set_text(
+            f"payload: {dist:+.3f} m | arm: {arm_dist:+.3f} m | combined: {combined_dist:+.3f} m"
+        )
+        clear_marker.set_data([anim_u[frame_idx]], [combined_dist])
         return moving_poly, moving_center, dist_text, clear_marker
 
     ax.legend(loc="upper right")

@@ -17,6 +17,8 @@ class ScenarioConfig:
     moving_block_size: Tuple[float, float, float]
     start_yaw_deg: float
     goal_yaw_deg: float
+    start_approach_direction: Tuple[float, float, float]
+    goal_approach_direction: Tuple[float, float, float]
     goal_normals: Tuple[Tuple[float, float, float], ...]
 
 
@@ -53,6 +55,11 @@ class ScenarioLibrary:
         goal_yaw_deg = float(moving_cfg.get("goal_yaw_deg", 0.0))
 
         goal = _resolve_goal(scene, moving_size, moving_cfg["goal"])
+        start_approach_direction, goal_approach_direction = _parse_approach_directions(
+            start=start,
+            goal=goal,
+            moving_cfg=moving_cfg,
+        )
         goal_normals = _parse_goal_normals(moving_cfg=moving_cfg, scenario_name=key)
 
         return ScenarioConfig(
@@ -62,6 +69,8 @@ class ScenarioLibrary:
             moving_block_size=moving_size,
             start_yaw_deg=start_yaw_deg,
             goal_yaw_deg=goal_yaw_deg,
+            start_approach_direction=start_approach_direction,
+            goal_approach_direction=goal_approach_direction,
             goal_normals=goal_normals,
         )
 
@@ -158,6 +167,15 @@ def _vec3(values: Any) -> Tuple[float, float, float]:
     if not isinstance(values, (list, tuple)) or len(values) != 3:
         raise ValueError("Expected exactly 3 values.")
     return (float(values[0]), float(values[1]), float(values[2]))
+
+
+def _normalize_vec3(values: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    arr = np.asarray(values, dtype=float).reshape(3)
+    mag = float(np.linalg.norm(arr))
+    if mag <= 1e-12:
+        return (0.0, 0.0, -1.0)
+    out = arr / mag
+    return (float(out[0]), float(out[1]), float(out[2]))
 
 
 def _load_yaml_payload(path: Path) -> Dict[str, Any]:
@@ -257,3 +275,24 @@ def _parse_goal_normals(
         normals.append((float(unit[0]), float(unit[1]), float(unit[2])))
 
     return tuple(normals)
+
+
+def _parse_approach_directions(
+    *,
+    start: Tuple[float, float, float],
+    goal: Tuple[float, float, float],
+    moving_cfg: Dict[str, Any],
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    goal_dir = _normalize_vec3(_vec3(moving_cfg.get("approach_direction", [0.0, 0.0, -1.0])))
+    start_raw = moving_cfg.get("start_approach_direction")
+    if start_raw is None:
+        start_dir = _normalize_vec3(
+            (
+                float(goal[0] - start[0]),
+                float(goal[1] - start[1]),
+                float(goal[2] - start[2]),
+            )
+        )
+    else:
+        start_dir = _normalize_vec3(_vec3(start_raw))
+    return start_dir, goal_dir

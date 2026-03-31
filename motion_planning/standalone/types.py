@@ -14,26 +14,13 @@ class StandaloneScenario:
     goal_world_xyz: tuple[float, float, float]
     start_yaw_rad: float = 0.0
     goal_yaw_rad: float = 0.0
+    start_approach_direction_world: tuple[float, float, float] = (0.0, 0.0, -1.0)
+    goal_approach_direction_world: tuple[float, float, float] = (0.0, 0.0, -1.0)
     planner_start_q: tuple[float, ...] | None = None
     planner_goal_q: tuple[float, ...] | None = None
     anchor_count: int = 6
     overlay_scene_name: str | None = None
     overlay_scene_translation: tuple[float, float, float] | None = None
-
-
-@dataclass
-class SolverComparisonResult:
-    name: str
-    success: bool
-    message: str
-    q_actuated: np.ndarray
-    q_dynamic: dict[str, float]
-    fk_xyz: np.ndarray
-    fk_yaw_rad: float
-    position_error_m: float
-    yaw_error_deg: float
-    ik_backend: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

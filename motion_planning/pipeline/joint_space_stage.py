@@ -8,6 +8,11 @@ import numpy as np
 from scipy.interpolate import PchipInterpolator
 
 from motion_planning.pipeline.joint_goal_stage import JointGoalStage
+from motion_planning.pipeline.joint_space_global_path import (
+    JointSpaceGlobalPathPlanner,
+    JointSpaceGlobalPathRequest,
+    JointSpaceGlobalPathResult,
+)
 
 
 def _wrap_to_pi(angle_rad: float) -> float:
@@ -265,6 +270,12 @@ class JointSpaceCartesianPlanner:
                 "mean_anchor_polyline_deviation_m": float(np.mean(polyline_arr)) if polyline_arr.size else 0.0,
             },
         )
+
+    def plan_global_path(
+        self,
+        req: JointSpaceGlobalPathRequest,
+    ) -> JointSpaceGlobalPathResult:
+        return JointSpaceGlobalPathPlanner(self).plan(req)
 
     def plan(
         self,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import numpy as np
 
 from motion_planning.scenarios import ScenarioLibrary
 
@@ -45,6 +46,15 @@ _CBS_SCENARIO_STARTS: dict[str, tuple] = {
 }
 
 
+def _unit(v: tuple[float, float, float]) -> tuple[float, float, float]:
+    arr = np.asarray(v, dtype=float).reshape(3)
+    n = float(np.linalg.norm(arr))
+    if n <= 1e-12:
+        return (0.0, 0.0, -1.0)
+    arr = arr / n
+    return (float(arr[0]), float(arr[1]), float(arr[2]))
+
+
 _CURATED_SCENARIOS: tuple[StandaloneScenario, ...] = (
     StandaloneScenario(
         name="short_reachable_move",
@@ -53,6 +63,8 @@ _CURATED_SCENARIOS: tuple[StandaloneScenario, ...] = (
         goal_world_xyz=(0.781, 0.146, -2.874),
         start_yaw_rad=_YAW_90,
         goal_yaw_rad=_YAW_90,
+        start_approach_direction_world=_unit((0.781 - _XYZ_HOVER_CENTER[0], 0.146 - _XYZ_HOVER_CENTER[1], -2.874 - _XYZ_HOVER_CENTER[2])),
+        goal_approach_direction_world=(0.0, 0.0, -1.0),
         planner_start_q=_Q_HOVER_CENTER,
         planner_goal_q=(0.17, -0.80, 0.55, 0.40, -0.17),
         anchor_count=6,
@@ -64,6 +76,8 @@ _CURATED_SCENARIOS: tuple[StandaloneScenario, ...] = (
         goal_world_xyz=_XYZ_HOVER_LEFT,
         start_yaw_rad=_YAW_90,
         goal_yaw_rad=math.radians(60.0),
+        start_approach_direction_world=_unit((_XYZ_HOVER_LEFT[0] - _XYZ_HOVER_CENTER[0], _XYZ_HOVER_LEFT[1] - _XYZ_HOVER_CENTER[1], _XYZ_HOVER_LEFT[2] - _XYZ_HOVER_CENTER[2])),
+        goal_approach_direction_world=(0.0, 0.0, -1.0),
         planner_start_q=_Q_HOVER_CENTER,
         planner_goal_q=_Q_HOVER_LEFT,
         anchor_count=6,
@@ -75,6 +89,8 @@ _CURATED_SCENARIOS: tuple[StandaloneScenario, ...] = (
         goal_world_xyz=_XYZ_GOAL_CENTER,
         start_yaw_rad=_YAW_90,
         goal_yaw_rad=_YAW_90,
+        start_approach_direction_world=_unit((_XYZ_GOAL_CENTER[0] - _XYZ_HOVER_CENTER[0], _XYZ_GOAL_CENTER[1] - _XYZ_HOVER_CENTER[1], _XYZ_GOAL_CENTER[2] - _XYZ_HOVER_CENTER[2])),
+        goal_approach_direction_world=(0.0, 0.0, -1.0),
         planner_start_q=_Q_HOVER_CENTER,
         planner_goal_q=_Q_GOAL_CENTER,
         anchor_count=6,
@@ -87,6 +103,8 @@ _CURATED_SCENARIOS: tuple[StandaloneScenario, ...] = (
         goal_world_xyz=(0.781, 0.146, -2.874),
         start_yaw_rad=_YAW_90,
         goal_yaw_rad=_YAW_90,
+        start_approach_direction_world=_unit((0.781 - _XYZ_HOVER_CENTER[0], 0.146 - _XYZ_HOVER_CENTER[1], -2.874 - _XYZ_HOVER_CENTER[2])),
+        goal_approach_direction_world=(0.0, 0.0, -1.0),
         planner_start_q=_Q_HOVER_CENTER,
         planner_goal_q=(0.17, -0.80, 0.55, 0.40, -0.17),
         anchor_count=6,
@@ -129,6 +147,8 @@ def make_default_scenarios() -> dict[str, StandaloneScenario]:
                 goal_world_xyz=goal_xyz,
                 start_yaw_rad=start_yaw,
                 goal_yaw_rad=goal_yaw,
+                start_approach_direction_world=tuple(float(v) for v in cfg.start_approach_direction),
+                goal_approach_direction_world=tuple(float(v) for v in cfg.goal_approach_direction),
                 planner_start_q=q_start,
                 planner_goal_q=q_goal,
                 anchor_count=6,

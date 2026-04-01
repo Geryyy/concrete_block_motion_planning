@@ -169,6 +169,19 @@ def _draw_frame_axes(ax, tf: np.ndarray, length: float, *, label: str) -> None:
     ax.scatter([o[0]], [o[1]], [o[2]], c="k", s=18, label=label)
 
 
+def _tool_frame_with_z_down(tf: np.ndarray) -> np.ndarray:
+    """Return a display frame aligned with the task convention z-down.
+
+    The stored K8 frame keeps the current yaw convention, but for demo display
+    we want the tool frame with its local z-axis pointing downward. A 180 deg
+    rotation about local x flips y/z while preserving the projected x-axis yaw.
+    """
+    tf = np.asarray(tf, dtype=float)
+    corrected = tf.copy()
+    corrected[:3, :3] = corrected[:3, :3] @ np.diag([1.0, -1.0, -1.0])
+    return corrected
+
+
 def _set_demo_axes(ax, scene, *point_sets: np.ndarray, margin: float = 0.35) -> None:
     pts = []
     for blk in getattr(scene, "blocks", []):
@@ -380,16 +393,16 @@ def main() -> None:
         frame_len = 0.18
         _draw_frame_axes(
             ax,
-            arm_model._frame_tf(q_maps_path[0], "K8_tool_center_point"),
+            _tool_frame_with_z_down(arm_model._frame_tf(q_maps_path[0], "K8_tool_center_point")),
             frame_len,
-            label="K8 frame (start)",
+            label="tool frame (start, z-down)",
         )
         if len(q_maps_path) > 1:
             _draw_frame_axes(
                 ax,
-                arm_model._frame_tf(q_maps_path[-1], "K8_tool_center_point"),
+                _tool_frame_with_z_down(arm_model._frame_tf(q_maps_path[-1], "K8_tool_center_point")),
                 frame_len,
-                label="K8 frame (goal)",
+                label="tool frame (goal, z-down)",
             )
     else:
         arm_clear_anim = np.full(anim_u.shape, np.nan, dtype=float)

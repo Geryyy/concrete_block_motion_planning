@@ -21,6 +21,8 @@ class JointGoalSolveResult:
     success: bool
     message: str
     offset_m: float
+    base_frame: str
+    target_frame: str
     goal_world: np.ndarray
     goal_base: np.ndarray
     target_yaw_rad: float
@@ -31,6 +33,7 @@ class JointGoalSolveResult:
     fk_position_error_m: float
     fk_yaw_error_rad: float
     fk_xyz_base: np.ndarray
+    fk_xyz_world: np.ndarray
     fk_yaw_rad: float
     ik_backend: str
 
@@ -133,10 +136,27 @@ class JointGoalStage:
             target_yaw=float(target_yaw_rad),
             q_seed=q_seed,
         )
+        fk_xyz_base = np.asarray(ss.fk_xyz, dtype=float)
+        fk_xyz_world = (self._t_world_base @ np.concatenate([fk_xyz_base, [1.0]], dtype=float))[:3]
+        message = str(ss.message)
+        if not ss.success:
+            message = (
+                f"{message} "
+                f"[frames: world->{self._cfg.base_frame}->{self._cfg.target_frame}; "
+                f"requested_world={np.array2string(goal_world_arr, precision=4, suppress_small=False)}, "
+                f"requested_base={np.array2string(goal_base, precision=4, suppress_small=False)}, "
+                f"requested_yaw={float(target_yaw_rad):.4f}rad; "
+                f"fk_world={np.array2string(fk_xyz_world, precision=4, suppress_small=False)}, "
+                f"fk_base={np.array2string(fk_xyz_base, precision=4, suppress_small=False)}, "
+                f"fk_yaw={float(ss.fk_yaw_rad):.4f}rad; "
+                f"ik_status={ss.ik_result.status}]"
+            )
         return JointGoalSolveResult(
             success=bool(ss.success),
-            message=ss.message,
+            message=message,
             offset_m=float(offset_m),
+            base_frame=str(self._cfg.base_frame),
+            target_frame=str(self._cfg.target_frame),
             goal_world=goal_world_arr,
             goal_base=np.asarray(goal_base, dtype=float),
             target_yaw_rad=float(target_yaw_rad),
@@ -146,7 +166,8 @@ class JointGoalStage:
             passive_residual=float(ss.passive_residual),
             fk_position_error_m=float(ss.fk_position_error_m),
             fk_yaw_error_rad=float(ss.fk_yaw_error_rad),
-            fk_xyz_base=np.asarray(ss.fk_xyz, dtype=float),
+            fk_xyz_base=fk_xyz_base,
+            fk_xyz_world=fk_xyz_world,
             fk_yaw_rad=float(ss.fk_yaw_rad),
             ik_backend=str(ss.ik_result.status),
         )

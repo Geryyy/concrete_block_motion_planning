@@ -60,11 +60,11 @@ class SteadyStateResult:
     fk_position_error_m:
         Final TCP position error of the returned state against the requested target.
     fk_yaw_error_rad:
-        Final TCP yaw error of the returned state against the requested target.
+        Final ``phiTool`` error of the returned state against the requested target.
     fk_xyz:
         Final TCP position of the returned state in the configured base frame.
     fk_yaw_rad:
-        Final TCP yaw of the returned state in the configured base frame.
+        Final ``phiTool`` of the returned state in the configured base frame.
     """
 
     success: bool
@@ -351,9 +351,9 @@ class CraneSteadyState:
             Desired end-effector position ``[x, y, z]`` in the base frame
             (metres).
         target_yaw:
-            Desired yaw angle of the tool frame (radians) around the world
-            Z-axis.  This is ``phi_tool = arctan2(R[1,0], R[0,0])`` as used
-            by the analytic IK.
+            Desired timber ``phiTool`` angle in radians. This matches the
+            projected world-yaw of the K8 frame's local Y axis:
+            ``phiTool = atan2(R[1,1], R[0,1])``.
         q_seed:
             Optional joint-name → value seed.  For passive joints the seed
             is used only as the fsolve initial guess; it is overwritten by
@@ -372,15 +372,12 @@ class CraneSteadyState:
         q_seed_map = dict(q_seed or {})
 
         # Auto-seed theta1 and theta8 if not provided.
-        # theta8 formula derived from empirical FK relationship:
-        #   phi_fk ≈ π/2 + theta1 + 0.4192 * theta8  (at theta7 ≈ π/2 equilibrium)
-        _THETA8_GAIN = 0.4192
         if "theta1_slewing_joint" not in q_seed_map:
             theta1_guess = float(np.arctan2(float(p[1]), float(p[0])))
             q_seed_map["theta1_slewing_joint"] = theta1_guess
         if "theta8_rotator_joint" not in q_seed_map:
             theta1_for_t8 = float(q_seed_map["theta1_slewing_joint"])
-            theta8_guess = float((float(target_yaw) - np.pi / 2.0 - theta1_for_t8) / _THETA8_GAIN)
+            theta8_guess = float(np.arctan2(np.sin(theta1_for_t8 - float(target_yaw)), np.cos(theta1_for_t8 - float(target_yaw))))
             q_seed_map["theta8_rotator_joint"] = float(np.clip(theta8_guess, -1.01, 1.01))
 
         # Use analytic equilibrium (ported from timber comp_equilibrium) as
@@ -696,7 +693,7 @@ class CraneSteadyState:
             end_frame=self._end_frame,
         )
         fk_xyz = np.asarray(T[:3, 3], dtype=float).reshape(3)
-        fk_yaw = float(np.arctan2(T[1, 0], T[0, 0]))
+        fk_yaw = _phi_tool_from_transform(T)
         pos_err = float(np.linalg.norm(fk_xyz - np.asarray(target_pos, dtype=float).reshape(3)))
         yaw_err = float(np.arctan2(np.sin(fk_yaw - float(target_yaw)), np.cos(fk_yaw - float(target_yaw))))
         return fk_xyz, fk_yaw, pos_err, yaw_err
@@ -706,16 +703,24 @@ class CraneSteadyState:
 # Module-level helpers
 # ------------------------------------------------------------------ #
 
-def _pose_from_pos_yaw(pos: np.ndarray, yaw: float) -> np.ndarray:
-    """Build a 4x4 homogeneous transform from position + yaw angle.
+def _phi_tool_from_transform(T: np.ndarray) -> float:
+    """Extract timber ``phiTool`` from a homogeneous transform.
 
-    The rotation is a pure Z-axis rotation so that:
-        phi_tool = arctan2(R[1,0], R[0,0]) == yaw
-
-    This matches the ``phi_tool`` convention used by
-    :class:`~.inverse_kinematics.AnalyticInverseKinematics`.
+    In the timber stack, ``phiTool`` is the world-yaw of the K8 frame's local
+    Y axis projected into the XY plane.
     """
-    cy, sy = float(np.cos(yaw)), float(np.sin(yaw))
+    T_arr = np.asarray(T, dtype=float).reshape(4, 4)
+    return float(np.arctan2(T_arr[1, 1], T_arr[0, 1]))
+
+
+def _pose_from_pos_yaw(pos: np.ndarray, yaw: float) -> np.ndarray:
+    """Build a 4x4 homogeneous transform from position + timber ``phiTool``.
+
+    For a pure Z rotation, the K8 frame's local Y axis has yaw ``phiTool``.
+    That corresponds to a body rotation of ``phiTool - pi/2`` about world Z.
+    """
+    rot_z = float(yaw) - 0.5 * np.pi
+    cy, sy = float(np.cos(rot_z)), float(np.sin(rot_z))
     T = np.eye(4, dtype=float)
     T[0, 0] = cy;  T[0, 1] = -sy
     T[1, 0] = sy;  T[1, 1] =  cy

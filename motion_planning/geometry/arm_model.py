@@ -91,6 +91,27 @@ _LINK_CAPSULES: tuple[_LinkCapsuleDef, ...] = (
         np.array([0.176, -0.055, 0.0], dtype=float),
         0.186,
     ),
+    _LinkCapsuleDef(
+        "PZS100_top_gripper_body",
+        "K8_tool_center_point",
+        np.array([0.0, 0.0, 0.0], dtype=float),
+        np.array([0.0, 0.0, -1.5], dtype=float),
+        0.40,
+    ),
+    _LinkCapsuleDef(
+        "PZS100_left_rail_body",
+        "K10_left_rail",
+        np.array([0.0, -0.1, 0.0], dtype=float),
+        np.array([-1.2, -0.1, 0.0], dtype=float),
+        0.15,
+    ),
+    _LinkCapsuleDef(
+        "PZS100_right_rail_body",
+        "K12_right_rail",
+        np.array([0.0, -0.1, 0.0], dtype=float),
+        np.array([-1.2, -0.1, 0.0], dtype=float),
+        0.15,
+    ),
 )
 
 _FRAME_CAPSULES: tuple[_CapsuleDef, ...] = (

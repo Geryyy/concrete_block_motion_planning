@@ -7,6 +7,11 @@ import numpy as np
 from motion_planning.pipeline import JointGoalStage
 
 
+def _phi_tool_from_transform(T: np.ndarray) -> float:
+    T_arr = np.asarray(T, dtype=float).reshape(4, 4)
+    return float(math.atan2(T_arr[1, 1], T_arr[0, 1]))
+
+
 def test_generate_linear_preapproach_targets_offsets_along_line():
     start = np.array([0.0, 0.0, 0.0], dtype=float)
     target = np.array([0.0, 3.0, 0.0], dtype=float)
@@ -56,7 +61,7 @@ def test_joint_goal_stage_solves_world_pose_from_fk_reachable_pose():
     )
     T = np.asarray(fk["base_to_end"]["homogeneous"], dtype=float)
     goal_world = T[:3, 3]
-    yaw = math.atan2(T[1, 0], T[0, 0])
+    yaw = _phi_tool_from_transform(T)
 
     res = stage.solve_world_pose(goal_world=goal_world, target_yaw_rad=yaw, q_seed=q_ref)
     assert res.success

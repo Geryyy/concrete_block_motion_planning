@@ -44,6 +44,11 @@ def _rotvec_from_R(R: np.ndarray) -> np.ndarray:
     return 0.5 * theta / s * w
 
 
+def _phi_tool_from_R(R: np.ndarray) -> float:
+    R_arr = np.asarray(R, dtype=float).reshape(3, 3)
+    return float(np.arctan2(R_arr[1, 1], R_arr[0, 1]))
+
+
 @dataclass
 class IkSolveResult:
     success: bool
@@ -172,7 +177,8 @@ class AnalyticIKSolver(_IKBase):
         p_target = np.asarray(target_T_base_to_end[:3, 3], dtype=float)
         R_target = np.asarray(target_T_base_to_end[:3, :3], dtype=float)
         x_t, y_t, z_t = float(p_target[0]), float(p_target[1]), float(p_target[2])
-        phi_tool = float(np.arctan2(R_target[1, 0], R_target[0, 0]))
+        # Timber IK uses phiTool, i.e. the world-yaw of the K8 frame's local Y axis.
+        phi_tool = _phi_tool_from_R(R_target)
 
         bounds = {
             "theta1_slewing_joint": self._joint_bounds("theta1_slewing_joint"),
@@ -213,9 +219,7 @@ class AnalyticIKSolver(_IKBase):
         if "theta8_rotator_joint" in fixed:
             theta8 = float(fixed["theta8_rotator_joint"])
         else:
-            # phi_fk ≈ π/2 + theta1 + 0.4192 * theta8  (at theta7 ≈ π/2 equilibrium)
-            _THETA8_GAIN = 0.4192
-            theta8 = self._wrap_angle((phi_tool - np.pi / 2.0 - theta1) / _THETA8_GAIN)
+            theta8 = self._wrap_angle(theta1 - phi_tool)
             if abs(q0_8 - theta8) > np.pi:
                 theta8 -= 2.0 * np.pi * float(np.sign(theta8 - q0_8))
         if (np.isfinite(lo8) and theta8 < lo8 - 1e-9) or (np.isfinite(hi8) and theta8 > hi8 + 1e-9):
@@ -299,10 +303,13 @@ class AnalyticIKSolver(_IKBase):
         #   until theta2 converges (typically 3-5 iterations).
         # -----------------------------------------------------------------------
 
+        last_search_n_pts = 0
+
         def _run_d45_search(
             p5_arm: np.ndarray,
         ) -> tuple[float | None, float | None, float | None]:
             """Vectorised d45 search targeting p5_arm (K5 position in arm plane)."""
+            nonlocal last_search_n_pts
             dp = p5_arm - g.p2
             d_p2p5 = float(np.linalg.norm(dp))
             if d_p2p5 < 1e-9:
@@ -327,6 +334,7 @@ class AnalyticIKSolver(_IKBase):
                 d45_hi_eff = d45_lo_eff + 1e-12
 
             n_pts = 1 if d45_hi_eff - d45_lo_eff < 1e-11 else 120
+            last_search_n_pts = n_pts
             d45_vec = np.linspace(d45_lo_eff, d45_hi_eff, n_pts, dtype=float)
             link2_vec = np.sqrt(g.a3 ** 2 + d45_vec ** 2)
             q4_vec = 0.5 * (d45_vec - g.d4)
@@ -436,7 +444,9 @@ class AnalyticIKSolver(_IKBase):
 
         T_try = self._fk(q_try, base_frame=base_frame, end_frame=end_frame)
         pos_err = float(np.linalg.norm(T_try[:3, 3] - p_target))
-        rot_err = float(np.linalg.norm(_rotvec_from_R(R_target.T @ T_try[:3, :3])))
+        phi_try = _phi_tool_from_R(T_try[:3, :3])
+        rot_err = float(np.arctan2(np.sin(phi_try - phi_tool), np.cos(phi_try - phi_tool)))
+        rot_err = float(abs(rot_err))
 
         if pos_err > 2e-2 or rot_err > 5e-2:
             return None
@@ -450,7 +460,7 @@ class AnalyticIKSolver(_IKBase):
             q_dynamic={jn: float(q_try.get(jn, 0.0)) for jn in self._cfg.dynamic_joints},
             q_actuated=q_act,
             q_passive=q_pas,
-            iterations=n_pts * 2,
+            iterations=max(1, last_search_n_pts * 2),
             cost=float(0.5 * (pos_err * pos_err + rot_err * rot_err)),
             pos_error_m=pos_err,
             rot_error_rad=rot_err,
@@ -478,6 +488,7 @@ class NumericIKSolver(_IKBase):
         T_target = np.asarray(target_T_base_to_end, dtype=float).reshape(4, 4)
         p_target = T_target[:3, 3].copy()
         R_target = T_target[:3, :3].copy()
+        phi_target = _phi_tool_from_R(R_target)
         dynamic_names = list(self._cfg.dynamic_joints)
         q_opt_names = [jn for jn in act_names if jn not in fixed]
 
@@ -511,7 +522,9 @@ class NumericIKSolver(_IKBase):
             p_cur = T_cur[:3, 3]
             R_cur = T_cur[:3, :3]
             r_pos = pos_weight * (p_cur - p_target)
-            r_rot = rot_weight * _rotvec_from_R(R_target.T @ R_cur)
+            phi_cur = _phi_tool_from_R(R_cur)
+            phi_err = float(np.arctan2(np.sin(phi_cur - phi_target), np.cos(phi_cur - phi_target)))
+            r_rot = np.array([rot_weight * phi_err], dtype=float)
             r_reg = np.sqrt(reg_seed_weight) * (x - x0_arr)
             return np.concatenate([r_pos, r_rot, r_reg])
 
@@ -529,7 +542,8 @@ class NumericIKSolver(_IKBase):
         p_fin = T_fin[:3, 3]
         R_fin = T_fin[:3, :3]
         pos_err = float(np.linalg.norm(p_fin - p_target))
-        rot_err = float(np.linalg.norm(_rotvec_from_R(R_target.T @ R_fin)))
+        phi_fin = _phi_tool_from_R(R_fin)
+        rot_err = float(abs(np.arctan2(np.sin(phi_fin - phi_target), np.cos(phi_fin - phi_target))))
 
         success = bool(opt.success) or (pos_err <= 1e-5 and rot_err <= 1e-5)
         status = "numeric_success" if bool(opt.success) else ("numeric_residual_success" if success else "failed")

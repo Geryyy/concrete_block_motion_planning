@@ -1,4 +1,4 @@
-urdf_path: ../../crane_urdf/crane.urdf
+urdf_path: ../data/crane.urdf
 gravity:
 - 0.0
 - 0.0

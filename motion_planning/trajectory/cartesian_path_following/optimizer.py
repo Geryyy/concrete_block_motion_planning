@@ -130,7 +130,7 @@ def _fk_num(pin, model, data, q_dec: np.ndarray, tool_fid: int) -> np.ndarray:
 
 
 def _fk_yaw_num(pin, model, data, q_dec: np.ndarray, tool_fid: int) -> float:
-    """Numeric FK: decision q → TCP yaw angle (scalar)."""
+    """Numeric FK: decision q → timber ``phiTool`` angle (scalar)."""
     nq_pin = int(model.nq)
     q_pin = np.asarray(pin.neutral(model), dtype=float)
     for jid in range(1, model.njoints):
@@ -146,8 +146,7 @@ def _fk_yaw_num(pin, model, data, q_dec: np.ndarray, tool_fid: int) -> float:
     pin.forwardKinematics(model, data, q_pin)
     pin.updateFramePlacements(model, data)
     R = np.asarray(data.oMf[tool_fid].rotation, dtype=float)
-    # Extract yaw (Z rotation) from rotation matrix using atan2(R[1,0], R[0,0])
-    yaw = np.arctan2(R[1, 0], R[0, 0])
+    yaw = np.arctan2(R[1, 1], R[0, 1])
     return float(yaw)
 
 
@@ -176,9 +175,9 @@ def _bspline_eval_symbolic_param(s, ctrl_flat, n_ctrl: int, degree: int, dim: in
 
 
 def _yaw_from_rotation_matrix_symbolic(R):
-    """Extract yaw (Z rotation) from a symbolic rotation matrix using atan2(R[1,0], R[0,0])."""
+    """Extract timber ``phiTool`` from a symbolic rotation matrix."""
     import casadi as ca
-    return ca.atan2(R[1, 0], R[0, 0])
+    return ca.atan2(R[1, 1], R[0, 1])
 
 
 

@@ -9,6 +9,11 @@ from motion_planning.mechanics.analytic import AnalyticModelConfig, CraneSteadyS
 from motion_planning.mechanics.analytic.pinocchio_utils import q_map_to_pin_q
 
 
+def _phi_tool_from_transform(T: np.ndarray) -> float:
+    T_arr = np.asarray(T, dtype=float).reshape(4, 4)
+    return float(np.arctan2(T_arr[1, 1], T_arr[0, 1]))
+
+
 @pytest.fixture(scope="module")
 def cfg() -> AnalyticModelConfig:
     return AnalyticModelConfig.default()
@@ -48,7 +53,7 @@ def test_steady_state_balances_passive_and_respects_theta3_cap(
     fk_seed = pin_kin.forward_kinematics(q_seed_pin, base_frame=cfg.base_frame, end_frame=cfg.target_frame)
     T_target = np.asarray(fk_seed["base_to_end"]["homogeneous"], dtype=float)
     p_target = T_target[:3, 3].copy()
-    yaw_target = float(np.arctan2(T_target[1, 0], T_target[0, 0]))
+    yaw_target = _phi_tool_from_transform(T_target)
 
     res = ss.compute(target_pos=p_target, target_yaw=yaw_target, q_seed=q_seed)
     assert res.success, res.message
@@ -77,4 +82,4 @@ def test_default_config_contains_theta3_upper_override(cfg: AnalyticModelConfig)
 def test_steady_state_reports_failure_for_unreachable_target(ss: CraneSteadyState):
     res = ss.compute(target_pos=np.array([100.0, 100.0, 100.0]), target_yaw=0.0, q_seed={})
     assert not res.success
-    assert "IK failed" in res.message
+    assert ("IK failed" in res.message) or ("FK truth check" in res.message)

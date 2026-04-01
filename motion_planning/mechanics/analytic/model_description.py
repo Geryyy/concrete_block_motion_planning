@@ -21,7 +21,7 @@ from .config import AnalyticModelConfig
 # Canonical crane config factory
 # ------------------------------------------------------------------ #
 
-_CRANE_URDF = Path(__file__).resolve().parents[3] / "crane_urdf" / "crane.urdf"
+_CRANE_URDF = Path(__file__).resolve().parents[2] / "data" / "crane.urdf"
 
 
 def create_crane_config() -> AnalyticModelConfig:

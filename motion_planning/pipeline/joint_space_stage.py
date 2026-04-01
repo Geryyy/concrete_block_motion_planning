@@ -19,6 +19,11 @@ def _wrap_to_pi(angle_rad: float) -> float:
     return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
 
 
+def _phi_tool_from_transform(T: np.ndarray) -> float:
+    T_arr = np.asarray(T, dtype=float).reshape(4, 4)
+    return float(math.atan2(T_arr[1, 1], T_arr[0, 1]))
+
+
 @dataclass
 class JointSpacePlanResult:
     success: bool
@@ -125,7 +130,7 @@ class JointSpaceCartesianPlanner:
         )
         T = np.asarray(fk["base_to_end"]["homogeneous"], dtype=float)
         xyz = np.asarray(T[:3, 3], dtype=float).reshape(3)
-        yaw = float(math.atan2(T[1, 0], T[0, 0]))
+        yaw = _phi_tool_from_transform(T)
         return xyz, yaw, q_map
 
     def _clip_to_joint_limits(self, q_waypoints: np.ndarray) -> np.ndarray:

@@ -6,7 +6,7 @@ import inspect
 
 import numpy as np
 
-from motion_planning.core.types import TrajectoryRequest, TrajectoryResult
+from motion_planning.types import TrajectoryRequest, TrajectoryResult
 from motion_planning.trajectory.base import TrajectoryOptimizer
 from motion_planning.trajectory.dynamics import build_underactuated_qdd_symbolic
 from motion_planning.trajectory.limits import prepare_control_bounds_from_limits
@@ -1090,7 +1090,7 @@ class CartesianPathFollowingOptimizer(TrajectoryOptimizer):
 def main():
     q_start = np.array([1.265, 0.291, 1.069, 0.165, 0.165, 0.211, 1.571, 1.36])  # q_init
 
-    from motion_planning.mechanics.analytic import create_crane_config
+    from motion_planning.mechanics import create_crane_config
 
     p_start = np.array([-8.891, -5.842, 2.460])  # p_start
     yaw_start = 61.2 / 180.0 * np.pi

@@ -52,8 +52,8 @@ def _load_cases(path: Path) -> list[dict[str, Any]]:
 
 
 def _run_case(case: dict[str, Any], output_root: Path) -> dict[str, Any]:
-    from motion_planning.core.types import TrajectoryRequest
-    from motion_planning.mechanics.analytic import create_crane_config
+    from motion_planning.types import TrajectoryRequest
+    from motion_planning.mechanics import create_crane_config
     from motion_planning.trajectory.cartesian_path_following import (
         CartesianPathFollowingConfig,
         CartesianPathFollowingOptimizer,

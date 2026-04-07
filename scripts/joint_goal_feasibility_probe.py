@@ -24,7 +24,7 @@ def main() -> int:
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
-    from motion_planning.pipeline.joint_goal_stage import JointGoalStage
+    from motion_planning import JointGoalStage
 
     parser = argparse.ArgumentParser(
         description="Probe concrete joint-goal feasibility for pre-approach offsets."

@@ -5,9 +5,9 @@ from typing import Dict, Tuple
 import numpy as np
 
 from motion_planning.api import plan as plan_path
-from motion_planning.core.world_model import WorldModel
-from motion_planning.kinematics import CraneKinematics
-from motion_planning.mechanics.analytic import CraneSteadyState, ModelDescription, create_crane_config
+from motion_planning.world_model import WorldModel
+from motion_planning.mechanics import CraneKinematics
+from motion_planning.mechanics import CraneSteadyState, ModelDescription, create_crane_config
 
 
 _SAMPLE_RANGES: Dict[str, Tuple[float, float]] = {

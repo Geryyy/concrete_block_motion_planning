@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from motion_planning.core.types import TrajectoryRequest, TrajectoryResult
+from motion_planning.types import TrajectoryRequest, TrajectoryResult
 
 
 class TrajectoryOptimizer(Protocol):

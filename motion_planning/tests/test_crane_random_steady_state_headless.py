@@ -8,8 +8,8 @@ import pytest
 from scipy.optimize import least_squares
 
 from motion_planning.control import ComputedTorqueController
-from motion_planning.kinematics import CraneKinematics
-from motion_planning.mechanics.analytic import CraneSteadyState, ModelDescription, create_crane_config
+from motion_planning.mechanics import CraneKinematics
+from motion_planning.mechanics import CraneSteadyState, ModelDescription, create_crane_config
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]

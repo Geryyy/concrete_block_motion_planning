@@ -24,7 +24,7 @@ if scripts_root not in sys.path:
 from motion_planning.standalone.compare_solvers import compare_solver_suite
 from motion_planning.standalone.plotting import plot_plan_result, plot_solver_results
 from motion_planning.standalone.scenarios import make_default_scenarios
-from motion_planning.standalone.stacks import STACK_REGISTRY, apply_simple_time_scaling
+from motion_planning.standalone import STACK_REGISTRY, apply_simple_time_scaling
 from motion_planning.scenarios import ScenarioLibrary
 
 

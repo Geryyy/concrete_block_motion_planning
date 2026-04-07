@@ -5,12 +5,12 @@ from pathlib import Path
 import numpy as np
 
 from motion_planning.geometry.scene import Scene
-from motion_planning.pipeline import (
+from motion_planning import (
     JointGoalStage,
     JointSpaceCartesianPlanner,
     JointSpaceGlobalPathRequest,
 )
-from motion_planning.standalone.scenarios import make_default_scenarios
+from motion_planning import make_default_scenarios
 from motion_planning.trajectory.planning_limits import load_planning_limits_yaml
 
 

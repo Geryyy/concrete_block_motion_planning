@@ -6,9 +6,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from motion_planning.core.types import TrajectoryRequest
-from motion_planning.kinematics import CraneKinematics
-from motion_planning.mechanics.analytic import CraneSteadyState, ModelDescription, create_crane_config
+from motion_planning.types import TrajectoryRequest
+from motion_planning.mechanics import CraneKinematics
+from motion_planning.mechanics import CraneSteadyState, ModelDescription, create_crane_config
 from motion_planning.trajectory.path_following import (
     CranePathFollowingAcadosConfig,
     CranePathFollowingAcadosOptimizer,

@@ -1,23 +1,3 @@
-"""Crane steady-state computation: workspace target → actuated + passive equilibrium.
-
-Given a desired end-effector position and yaw angle this module:
-
-1. Solves the 5-DoF IK for the actuated joints
-   (theta1, theta2, theta3, q4, theta8) using :class:`AnalyticInverseKinematics`.
-2. Finds the static-equilibrium values of the passive joints
-   (theta6_tip_joint, theta7_tilt_joint) by solving g_p(q_act, q_p) = 0
-   via ``scipy.fsolve``.
-
-Quick-start
------------
->>> from motion_planning.mechanics.analytic import CraneSteadyState
->>> ss = CraneSteadyState.default()
->>> result = ss.compute(target_pos=np.array([5.0, 2.0, 3.0]), target_yaw=0.5)
->>> print(result.q_actuated)
->>> print(result.q_passive)
->>> print(f"passive residual: {result.passive_residual:.2e}")
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -31,42 +11,11 @@ from .config import AnalyticModelConfig
 from .inverse_kinematics import AnalyticInverseKinematics, IkSolveResult
 from .model_description import ModelDescription
 from .pinocchio_utils import q_map_to_pin_q
-
-
-# ------------------------------------------------------------------ #
-# Result dataclass
-# ------------------------------------------------------------------ #
+from .pose_conventions import phi_tool_from_transform, pose_from_pos_yaw
+from .reference_states import merge_reference_seed
 
 @dataclass
 class SteadyStateResult:
-    """Result of :meth:`CraneSteadyState.compute`.
-
-    Attributes
-    ----------
-    success:
-        ``True`` if both the IK and the passive equilibrium solve converged.
-    message:
-        Human-readable status message.
-    q_actuated:
-        Equilibrium values for the 5 actuated joints.
-    q_passive:
-        Equilibrium values for the 2 passive joints (g_p = 0 solution).
-    q_dynamic:
-        Combined dict of all 7 dynamic joint values (actuated + passive).
-    ik_result:
-        The full :class:`~.inverse_kinematics.IkSolveResult` for inspection.
-    passive_residual:
-        ``||g_p(q)||`` at the equilibrium solution (should be ~1e-11).
-    fk_position_error_m:
-        Final TCP position error of the returned state against the requested target.
-    fk_yaw_error_rad:
-        Final ``phiTool`` error of the returned state against the requested target.
-    fk_xyz:
-        Final TCP position of the returned state in the configured base frame.
-    fk_yaw_rad:
-        Final ``phiTool`` of the returned state in the configured base frame.
-    """
-
     success: bool
     message: str
     q_actuated: Dict[str, float]
@@ -79,33 +28,7 @@ class SteadyStateResult:
     fk_xyz: np.ndarray
     fk_yaw_rad: float
 
-
-# ------------------------------------------------------------------ #
-# Main class
-# ------------------------------------------------------------------ #
-
 class CraneSteadyState:
-    """Compute crane steady state from workspace target.
-
-    Parameters
-    ----------
-    desc:
-        Analytic model description (wraps the pinocchio model).
-    config:
-        Analytic model config (joint categorisation, tied joints, etc.).
-    ik_max_nfev:
-        Maximum function evaluations for the numeric IK fallback.
-    passive_tol:
-        Convergence tolerance passed to ``scipy.fsolve`` for the passive
-        equilibrium solve.
-    passive_max_iter:
-        Maximum iterations for the passive equilibrium fsolve.
-    base_frame:
-        Pinocchio frame name used as the IK reference base.
-    end_frame:
-        Pinocchio frame name used as the IK end-effector target.
-    """
-
     _DEFAULT_BASE = "K0_mounting_base"
     _DEFAULT_END = "K8_tool_center_point"
 
@@ -138,7 +61,6 @@ class CraneSteadyState:
         self._pin_model: pin.Model = desc.model
         self._pin_data = self._pin_model.createData()
 
-        # Pre-compute passive joint v-indices and URDF-midpoint initial guesses.
         self._pas_names: list[str] = list(config.passive_joints)
         self._pas_v_idx: list[int] = []
         self._pas_q0: list[float] = []
@@ -163,22 +85,16 @@ class CraneSteadyState:
             self._pas_ub.append(hi)
             self._pas_q0.append(0.5 * (lo + hi) if (np.isfinite(lo) and np.isfinite(hi)) else 0.0)
 
-        # ---- Pre-compute mass parameters for analytic equilibrium --------
-        # Port of timber comp_equilibrium.hpp — needs masses and COM of
-        # bodies at theta6, theta7, theta8 joints plus link lengths a6, d8.
         self._eq_params = self._extract_equilibrium_params()
 
     def _extract_equilibrium_params(self) -> dict[str, float]:
-        """Extract mass/COM/link params from pinocchio for analytic equilibrium."""
         model = self._pin_model
-        # Joint IDs for the wrist chain
         j6_id = int(model.getJointId("theta6_tip_joint"))
         j7_id = int(model.getJointId("theta7_tilt_joint"))
         j8_id = int(model.getJointId("theta8_rotator_joint"))
         i6 = model.inertias[j6_id]
         i7 = model.inertias[j7_id]
         i8 = model.inertias[j8_id]
-        # a6: K5→K6 offset (from frame placement)
         data = model.createData()
         q_zero = pin.neutral(model)
         pin.forwardKinematics(model, data, q_zero)
@@ -190,7 +106,6 @@ class CraneSteadyState:
         k6_pos = data.oMf[k6_fid].translation
         k8_pos = data.oMf[k8_fid].translation
         a6 = float(np.linalg.norm(k6_pos - k5_pos))
-        # d8: distance from K7/K6 to K8 along the rotator axis (at zero config)
         d8 = float(np.linalg.norm(k8_pos - k6_pos))
         return {
             "m6": float(i6.mass), "s6x": float(i6.lever[0]), "s6y": float(i6.lever[1]), "s6z": float(i6.lever[2]),
@@ -205,21 +120,6 @@ class CraneSteadyState:
         theta3: float,
         theta8: float,
     ) -> tuple[float, float]:
-        """Analytic passive-joint equilibrium (ported from timber comp_equilibrium).
-
-        Given actuated arm joints, returns (theta6, theta7) at static
-        equilibrium under gravity.  This is a closed-form formula using
-        mass/COM parameters extracted from the pinocchio model.
-
-        Parameters
-        ----------
-        theta2, theta3, theta8 : float
-            Actuated joint positions.
-
-        Returns
-        -------
-        (theta6, theta7) : tuple[float, float]
-        """
         p = self._eq_params
         m6, m7, m8 = p["m6"], p["m7"], p["m8"]
         s6x, s6z = p["s6x"], p["s6z"]
@@ -227,13 +127,11 @@ class CraneSteadyState:
         s8x, s8y, s8z = p["s8x"], p["s8y"], p["s8z"]
         a6, d8 = p["a6"], p["d8"]
 
-        # theta7: gravity balance of K7+K8 pendulum (independent of theta2/theta3)
         theta7 = -np.arctan2(
             d8 * m8 + s7z * m7 + s8z * m8,
             np.cos(theta8) * m8 * s8x - np.sin(theta8) * m8 * s8y + m7 * s7x,
         ) + np.pi
 
-        # theta6: gravity balance of K6+K7+K8 assembly
         c2, s2 = np.cos(theta2), np.sin(theta2)
         c3, s3 = np.cos(theta3), np.sin(theta3)
         c7, s7 = np.cos(theta7), np.sin(theta7)
@@ -303,10 +201,6 @@ class CraneSteadyState:
 
         return float(theta6), float(theta7)
 
-    # ------------------------------------------------------------------ #
-    # Constructor helpers
-    # ------------------------------------------------------------------ #
-
     @classmethod
     def default(
         cls,
@@ -318,7 +212,6 @@ class CraneSteadyState:
         fk_yaw_tol_rad: float = 5e-2,
         passive_max_iter: int = 200,
     ) -> "CraneSteadyState":
-        """Construct using the bundled crane config (``crane_config.yaml``)."""
         cfg = AnalyticModelConfig.default()
         desc = ModelDescription(cfg)
         return cls(
@@ -332,9 +225,138 @@ class CraneSteadyState:
             passive_max_iter=passive_max_iter,
         )
 
-    # ------------------------------------------------------------------ #
-    # Public API
-    # ------------------------------------------------------------------ #
+    def _result(
+        self,
+        *,
+        success: bool,
+        message: str,
+        q_actuated: Dict[str, float],
+        q_passive: Dict[str, float],
+        q_dynamic: Dict[str, float],
+        ik_result: IkSolveResult,
+        passive_residual: float,
+        fk_position_error_m: float,
+        fk_yaw_error_rad: float,
+        fk_xyz: np.ndarray | None = None,
+        fk_yaw_rad: float = float("nan"),
+    ) -> SteadyStateResult:
+        return SteadyStateResult(
+            success=success,
+            message=message,
+            q_actuated=q_actuated,
+            q_passive=q_passive,
+            q_dynamic=q_dynamic,
+            ik_result=ik_result,
+            passive_residual=passive_residual,
+            fk_position_error_m=fk_position_error_m,
+            fk_yaw_error_rad=fk_yaw_error_rad,
+            fk_xyz=np.zeros(3, dtype=float) if fk_xyz is None else np.asarray(fk_xyz, dtype=float),
+            fk_yaw_rad=fk_yaw_rad,
+        )
+
+    def _maps_from_dynamic(self, q_map: Mapping[str, float]) -> tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
+        q_full = dict(q_map)
+        for follower, leader in self._cfg.tied_joints.items():
+            if leader in q_full:
+                q_full[follower] = float(q_full[leader])
+        return (
+            q_full,
+            {jn: float(q_full.get(jn, 0.0)) for jn in self._cfg.dynamic_joints},
+            {jn: float(q_full.get(jn, 0.0)) for jn in self._cfg.actuated_joints},
+        )
+
+    @staticmethod
+    def _empty_ik_result(status: str, message: str) -> IkSolveResult:
+        return IkSolveResult(
+            success=False,
+            status=status,
+            message=message,
+            q_dynamic={},
+            q_actuated={},
+            q_passive={},
+            iterations=0,
+            cost=float("inf"),
+            pos_error_m=float("inf"),
+            rot_error_rad=float("inf"),
+        )
+
+    def _passive_only_ik_result(
+        self,
+        *,
+        success: bool,
+        q_dynamic: Dict[str, float],
+        q_actuated: Dict[str, float],
+        q_passive: Dict[str, float],
+    ) -> IkSolveResult:
+        return IkSolveResult(
+            success=success,
+            status="passive_equilibrium_only" if success else "passive_equilibrium_failed",
+            message="actuated-only completion",
+            q_dynamic=q_dynamic,
+            q_actuated=q_actuated,
+            q_passive=q_passive,
+            iterations=0,
+            cost=0.0 if success else float("inf"),
+            pos_error_m=0.0 if success else float("inf"),
+            rot_error_rad=0.0 if success else float("inf"),
+        )
+
+    def _failed_result(
+        self,
+        *,
+        message: str,
+        q_actuated: Dict[str, float],
+        q_passive: Dict[str, float],
+        q_dynamic: Dict[str, float],
+        ik_result: IkSolveResult,
+        passive_residual: float = float("inf"),
+    ) -> SteadyStateResult:
+        return self._result(
+            success=False,
+            message=message,
+            q_actuated=q_actuated,
+            q_passive=q_passive,
+            q_dynamic=q_dynamic,
+            ik_result=ik_result,
+            passive_residual=passive_residual,
+            fk_position_error_m=float("inf"),
+            fk_yaw_error_rad=float("inf"),
+        )
+
+    def _seed_target_joints(
+        self,
+        target_pos: np.ndarray,
+        target_yaw: float,
+        q_seed: Mapping[str, float] | None,
+    ) -> dict[str, float]:
+        q_seed_map = merge_reference_seed(q_seed)
+        q_seed_map.setdefault("theta1_slewing_joint", float(np.arctan2(float(target_pos[1]), float(target_pos[0]))))
+        theta1 = float(q_seed_map["theta1_slewing_joint"])
+        q_seed_map.setdefault(
+            "theta8_rotator_joint",
+            float(np.clip(np.arctan2(np.sin(theta1 - float(target_yaw)), np.cos(theta1 - float(target_yaw))), -1.01, 1.01)),
+        )
+        return q_seed_map
+
+    def _initial_passive_seed(self, q_seed_map: Mapping[str, float]) -> Dict[str, float]:
+        eq6, eq7 = self.analytic_equilibrium(
+            float(q_seed_map.get("theta2_boom_joint", 0.0)),
+            float(q_seed_map.get("theta3_arm_joint", 0.0)),
+            float(q_seed_map.get("theta8_rotator_joint", 0.0)),
+        )
+        eq_seed = {"theta6_tip_joint": eq6, "theta7_tilt_joint": eq7}
+        return {
+            jn: float(q_seed_map.get(jn, eq_seed.get(jn, self._pas_q0[i])))
+            for i, jn in enumerate(self._pas_names)
+        }
+
+    def _fk_check_message(self, converged: bool, pos_err: float, yaw_err: float) -> str:
+        if not converged:
+            return "Steady state iteration reached max iterations before convergence."
+        return (
+            "Steady state rejected by FK truth check "
+            f"(pos_err={pos_err:.4f}m, yaw_err={yaw_err:.4f}rad)."
+        )
 
     def compute(
         self,
@@ -343,59 +365,13 @@ class CraneSteadyState:
         *,
         q_seed: Mapping[str, float] | None = None,
     ) -> SteadyStateResult:
-        """Compute the steady state for a given workspace target.
-
-        Parameters
-        ----------
-        target_pos:
-            Desired end-effector position ``[x, y, z]`` in the base frame
-            (metres).
-        target_yaw:
-            Desired timber ``phiTool`` angle in radians. This matches the
-            projected world-yaw of the K8 frame's local Y axis:
-            ``phiTool = atan2(R[1,1], R[0,1])``.
-        q_seed:
-            Optional joint-name → value seed.  For passive joints the seed
-            is used only as the fsolve initial guess; it is overwritten by
-            the equilibrium solution.
-
-        Returns
-        -------
-        SteadyStateResult
-        """
         p = np.asarray(target_pos, dtype=float).ravel()
         if p.shape != (3,):
             raise ValueError(f"target_pos must have 3 elements, got shape {p.shape}.")
 
-        T_target = _pose_from_pos_yaw(p, float(target_yaw))
-
-        q_seed_map = dict(q_seed or {})
-
-        # Auto-seed theta1 and theta8 if not provided.
-        if "theta1_slewing_joint" not in q_seed_map:
-            theta1_guess = float(np.arctan2(float(p[1]), float(p[0])))
-            q_seed_map["theta1_slewing_joint"] = theta1_guess
-        if "theta8_rotator_joint" not in q_seed_map:
-            theta1_for_t8 = float(q_seed_map["theta1_slewing_joint"])
-            theta8_guess = float(np.arctan2(np.sin(theta1_for_t8 - float(target_yaw)), np.cos(theta1_for_t8 - float(target_yaw))))
-            q_seed_map["theta8_rotator_joint"] = float(np.clip(theta8_guess, -1.01, 1.01))
-
-        # Use analytic equilibrium (ported from timber comp_equilibrium) as
-        # initial passive joint estimate — much better than midrange defaults.
-        _theta2_seed = float(q_seed_map.get("theta2_boom_joint", 0.0))
-        _theta3_seed = float(q_seed_map.get("theta3_arm_joint", 0.0))
-        _theta8_seed = float(q_seed_map.get("theta8_rotator_joint", 0.0))
-        _eq6, _eq7 = self.analytic_equilibrium(_theta2_seed, _theta3_seed, _theta8_seed)
-        _eq_seed = {"theta6_tip_joint": _eq6, "theta7_tilt_joint": _eq7}
-
-        q_p_eq = {}
-        for i, jn in enumerate(self._pas_names):
-            if jn in q_seed_map:
-                q_p_eq[jn] = float(q_seed_map[jn])
-            elif jn in _eq_seed:
-                q_p_eq[jn] = float(_eq_seed[jn])
-            else:
-                q_p_eq[jn] = float(self._pas_q0[i])
+        T_target = pose_from_pos_yaw(p, float(target_yaw))
+        q_seed_map = self._seed_target_joints(p, float(target_yaw), q_seed)
+        q_p_eq = self._initial_passive_seed(q_seed_map)
         residual = float("inf")
         ik_res = None
         converged = False
@@ -413,44 +389,27 @@ class CraneSteadyState:
             )
 
             if not ik_res.success:
-                return SteadyStateResult(
-                    success=False,
+                return self._failed_result(
                     message=f"IK failed: {ik_res.message}",
                     q_actuated=ik_res.q_actuated,
                     q_passive=q_p_eq,
-                q_dynamic=ik_res.q_dynamic,
-                ik_result=ik_res,
-                passive_residual=float("inf"),
-                fk_position_error_m=float("inf"),
-                fk_yaw_error_rad=float("inf"),
-                fk_xyz=np.zeros(3, dtype=float),
-                fk_yaw_rad=float("nan"),
-            )
+                    q_dynamic=ik_res.q_dynamic,
+                    ik_result=ik_res,
+                )
 
-            q_full_map = dict(ik_res.q_dynamic)
-            for follower, leader in self._cfg.tied_joints.items():
-                if leader in q_full_map:
-                    q_full_map[follower] = q_full_map[leader]
-
+            q_full_map, _, _ = self._maps_from_dynamic(ik_res.q_dynamic)
             q_p_next, residual, passive_ok, passive_msg = self._passive_equilibrium(q_full_map, q_seed_map)
             if not passive_ok:
-                return SteadyStateResult(
-                    success=False,
+                return self._failed_result(
                     message=f"Passive equilibrium failed: {passive_msg} (residual={residual:.3e})",
                     q_actuated=ik_res.q_actuated,
                     q_passive=q_p_next,
                     q_dynamic=ik_res.q_dynamic,
                     ik_result=ik_res,
                     passive_residual=residual,
-                    fk_position_error_m=float("inf"),
-                    fk_yaw_error_rad=float("inf"),
-                    fk_xyz=np.zeros(3, dtype=float),
-                    fk_yaw_rad=float("nan"),
                 )
 
-            delta = 0.0
-            if q_p_eq:
-                delta = max(abs(float(q_p_next.get(jn, 0.0)) - float(q_p_eq.get(jn, 0.0))) for jn in self._pas_names)
+            delta = max(abs(float(q_p_next.get(jn, 0.0)) - float(q_p_eq.get(jn, 0.0))) for jn in self._pas_names)
             q_p_eq = q_p_next
             q_seed_map.update(ik_res.q_dynamic)
             q_seed_map.update(q_p_eq)
@@ -459,39 +418,20 @@ class CraneSteadyState:
                 break
 
         if ik_res is None:
-            return SteadyStateResult(
-                success=False,
+            return self._failed_result(
                 message="Steady-state iteration failed to initialize IK.",
                 q_actuated={},
                 q_passive={},
                 q_dynamic={},
-                ik_result=IkSolveResult(
-                    success=False,
-                    status="steady_state_init_failed",
-                    message="steady-state iteration failed to initialize IK",
-                    q_dynamic={},
-                    q_actuated={},
-                    q_passive={},
-                    iterations=0,
-                    cost=float("inf"),
-                    pos_error_m=float("inf"),
-                    rot_error_rad=float("inf"),
+                ik_result=self._empty_ik_result(
+                    "steady_state_init_failed",
+                    "steady-state iteration failed to initialize IK",
                 ),
-                passive_residual=float("inf"),
-                fk_position_error_m=float("inf"),
-                fk_yaw_error_rad=float("inf"),
-                fk_xyz=np.zeros(3, dtype=float),
-                fk_yaw_rad=float("nan"),
             )
 
         q_full_map = dict(ik_res.q_dynamic)
         q_full_map.update(q_p_eq)
-        for follower, leader in self._cfg.tied_joints.items():
-            if leader in q_full_map:
-                q_full_map[follower] = q_full_map[leader]
-
-        q_dyn_out = {jn: float(q_full_map.get(jn, 0.0)) for jn in self._cfg.dynamic_joints}
-        q_act_out = {jn: float(q_full_map.get(jn, 0.0)) for jn in self._cfg.actuated_joints}
+        q_full_map, q_dyn_out, q_act_out = self._maps_from_dynamic(q_full_map)
         fk_xyz, fk_yaw_rad, fk_position_error_m, fk_yaw_error_rad = self._evaluate_fk_target_error(
             q_full_map,
             target_pos=p,
@@ -504,17 +444,13 @@ class CraneSteadyState:
             and abs(fk_yaw_error_rad) <= self._fk_yaw_tol_rad
         )
         success = bool(converged and fk_ok)
-        if success:
-            message = "Steady state computed successfully."
-        elif not converged:
-            message = "Steady state iteration reached max iterations before convergence."
-        else:
-            message = (
-                "Steady state rejected by FK truth check "
-                f"(pos_err={fk_position_error_m:.4f}m, yaw_err={fk_yaw_error_rad:.4f}rad)."
-            )
+        message = "Steady state computed successfully." if success else self._fk_check_message(
+            converged,
+            fk_position_error_m,
+            fk_yaw_error_rad,
+        )
 
-        return SteadyStateResult(
+        return self._result(
             success=success,
             message=message,
             q_actuated=q_act_out,
@@ -534,67 +470,43 @@ class CraneSteadyState:
         *,
         q_seed: Mapping[str, float] | None = None,
     ) -> SteadyStateResult:
-        """Complete passive equilibrium for a known actuated joint state."""
-        q_full_map: dict[str, float] = {
-            jn: float(q_actuated.get(jn, 0.0)) for jn in self._cfg.actuated_joints
-        }
-        for follower, leader in self._cfg.tied_joints.items():
-            if leader in q_full_map:
-                q_full_map[follower] = q_full_map[leader]
+        q_seed_map = merge_reference_seed(q_seed, q_actuated=q_actuated)
+        q_full_map, q_dyn_out, q_act_out = self._maps_from_dynamic(
+            {jn: float(q_actuated.get(jn, 0.0)) for jn in self._cfg.actuated_joints}
+        )
 
-        q_p_eq, residual, passive_ok, passive_msg = self._passive_equilibrium(q_full_map, q_seed)
+        q_p_eq, residual, passive_ok, passive_msg = self._passive_equilibrium(q_full_map, q_seed_map)
         if not passive_ok:
-            q_dyn_out = {jn: float(q_full_map.get(jn, 0.0)) for jn in self._cfg.dynamic_joints}
-            q_act_out = {jn: float(q_full_map.get(jn, 0.0)) for jn in self._cfg.actuated_joints}
-            return SteadyStateResult(
+            return self._result(
                 success=False,
                 message=f"Passive equilibrium failed: {passive_msg} (residual={residual:.3e})",
                 q_actuated=q_act_out,
                 q_passive=q_p_eq,
                 q_dynamic=q_dyn_out,
-                ik_result=IkSolveResult(
+                ik_result=self._passive_only_ik_result(
                     success=False,
-                    status="passive_equilibrium_failed",
-                    message="actuated-only completion",
                     q_dynamic=q_dyn_out,
                     q_actuated=q_act_out,
                     q_passive=q_p_eq,
-                    iterations=0,
-                    cost=float("inf"),
-                    pos_error_m=float("inf"),
-                    rot_error_rad=float("inf"),
                 ),
                 passive_residual=residual,
                 fk_position_error_m=float("nan"),
                 fk_yaw_error_rad=float("nan"),
-                fk_xyz=np.zeros(3, dtype=float),
-                fk_yaw_rad=float("nan"),
             )
 
         q_full_map.update(q_p_eq)
-        for follower, leader in self._cfg.tied_joints.items():
-            if leader in q_full_map:
-                q_full_map[follower] = q_full_map[leader]
-
-        q_dyn_out = {jn: float(q_full_map.get(jn, 0.0)) for jn in self._cfg.dynamic_joints}
-        q_act_out = {jn: float(q_full_map.get(jn, 0.0)) for jn in self._cfg.actuated_joints}
-        return SteadyStateResult(
+        _, q_dyn_out, q_act_out = self._maps_from_dynamic(q_full_map)
+        return self._result(
             success=True,
             message="Passive equilibrium completed successfully.",
             q_actuated=q_act_out,
             q_passive=q_p_eq,
             q_dynamic=q_dyn_out,
-            ik_result=IkSolveResult(
+            ik_result=self._passive_only_ik_result(
                 success=True,
-                status="passive_equilibrium_only",
-                message="actuated-only completion",
                 q_dynamic=q_dyn_out,
                 q_actuated=q_act_out,
                 q_passive=q_p_eq,
-                iterations=0,
-                cost=0.0,
-                pos_error_m=0.0,
-                rot_error_rad=0.0,
             ),
             passive_residual=residual,
             fk_position_error_m=0.0,
@@ -603,28 +515,11 @@ class CraneSteadyState:
             fk_yaw_rad=float("nan"),
         )
 
-    # ------------------------------------------------------------------ #
-    # Private helpers
-    # ------------------------------------------------------------------ #
-
     def _passive_equilibrium(
         self,
         q_act_map: Mapping[str, float],
         q_seed: Mapping[str, float] | None,
     ) -> tuple[Dict[str, float], float, bool, str]:
-        """Solve g_p(q_act, q_p) = 0 for the passive joints.
-
-        At static equilibrium (dq = 0) the passive-joint equations of motion
-        reduce to the gravity term:  g_p(q_act, q_p) = 0.  We solve this
-        small nonlinear system via ``scipy.fsolve``.
-
-        Returns
-        -------
-        (passive_dict, residual_norm)
-            passive_dict:  joint-name → equilibrium value for each passive joint.
-            residual_norm: ||g_p|| at the solution (ideal: ~1e-11).
-        """
-        # Initial guess: prefer seed values, fall back to URDF midpoints.
         q_p0 = list(self._pas_q0)
         if q_seed is not None:
             for i, jname in enumerate(self._pas_names):
@@ -693,36 +588,7 @@ class CraneSteadyState:
             end_frame=self._end_frame,
         )
         fk_xyz = np.asarray(T[:3, 3], dtype=float).reshape(3)
-        fk_yaw = _phi_tool_from_transform(T)
+        fk_yaw = phi_tool_from_transform(T)
         pos_err = float(np.linalg.norm(fk_xyz - np.asarray(target_pos, dtype=float).reshape(3)))
         yaw_err = float(np.arctan2(np.sin(fk_yaw - float(target_yaw)), np.cos(fk_yaw - float(target_yaw))))
         return fk_xyz, fk_yaw, pos_err, yaw_err
-
-
-# ------------------------------------------------------------------ #
-# Module-level helpers
-# ------------------------------------------------------------------ #
-
-def _phi_tool_from_transform(T: np.ndarray) -> float:
-    """Extract timber ``phiTool`` from a homogeneous transform.
-
-    In the timber stack, ``phiTool`` is the world-yaw of the K8 frame's local
-    Y axis projected into the XY plane.
-    """
-    T_arr = np.asarray(T, dtype=float).reshape(4, 4)
-    return float(np.arctan2(T_arr[1, 1], T_arr[0, 1]))
-
-
-def _pose_from_pos_yaw(pos: np.ndarray, yaw: float) -> np.ndarray:
-    """Build a 4x4 homogeneous transform from position + timber ``phiTool``.
-
-    For a pure Z rotation, the K8 frame's local Y axis has yaw ``phiTool``.
-    That corresponds to a body rotation of ``phiTool - pi/2`` about world Z.
-    """
-    rot_z = float(yaw) - 0.5 * np.pi
-    cy, sy = float(np.cos(rot_z)), float(np.sin(rot_z))
-    T = np.eye(4, dtype=float)
-    T[0, 0] = cy;  T[0, 1] = -sy
-    T[1, 0] = sy;  T[1, 1] =  cy
-    T[:3, 3] = pos
-    return T

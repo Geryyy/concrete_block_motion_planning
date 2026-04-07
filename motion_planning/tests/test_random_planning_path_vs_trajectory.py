@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 
 from motion_planning import CartesianPathFollowingConfig, MotionPlanner, Scene
-from motion_planning.kinematics import CraneKinematics
-from motion_planning.mechanics.analytic import CraneSteadyState, ModelDescription, create_crane_config
+from motion_planning.mechanics import CraneKinematics
+from motion_planning.mechanics import CraneSteadyState, ModelDescription, create_crane_config
 
 
 def _acados_ready() -> bool:
@@ -91,10 +91,8 @@ def test_geometric_path_and_trajectory_tcp_are_reasonably_aligned():
     if not _acados_ready():
         pytest.skip("acados is not configured (ACADOS_SOURCE_DIR/lib/link_libs.json/bin/t_renderer missing)")
 
-    repo_root = Path(__file__).resolve().parents[2]
-    urdf = repo_root / "crane_urdf" / "crane.urdf"
-
     acfg = create_crane_config()
+    urdf = Path(acfg.urdf_path)
     kin = CraneKinematics(urdf)
     ss = CraneSteadyState(ModelDescription(acfg), acfg)
 
@@ -115,7 +113,6 @@ def test_geometric_path_and_trajectory_tcp_are_reasonably_aligned():
     traj_cfg = CartesianPathFollowingConfig(
         urdf_path=urdf,
         horizon_steps=60,
-        dt=0.04,
         nlp_solver_type="SQP",
         nlp_solver_max_iter=50,
         qp_solver_iter_max=80,

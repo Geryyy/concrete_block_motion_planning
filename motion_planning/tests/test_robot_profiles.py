@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from motion_planning.contracts import JointMapping, RobotProfile, TrajectoryContract
+from motion_planning.robot_profile import JointMapping, RobotProfile, TrajectoryContract
 from motion_planning.profiles import CONCRETE_PZS100_PROFILE, TIMBER_COMPAT_PROFILE
 
 

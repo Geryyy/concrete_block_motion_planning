@@ -7,8 +7,8 @@ from typing import Mapping, Sequence
 import numpy as np
 from scipy.interpolate import PchipInterpolator
 
-from motion_planning.pipeline.joint_goal_stage import JointGoalStage
-from motion_planning.pipeline.joint_space_global_path import (
+from motion_planning.joint_goal_stage import JointGoalStage
+from motion_planning.joint_space_global_path import (
     JointSpaceGlobalPathPlanner,
     JointSpaceGlobalPathRequest,
     JointSpaceGlobalPathResult,
@@ -17,11 +17,6 @@ from motion_planning.pipeline.joint_space_global_path import (
 
 def _wrap_to_pi(angle_rad: float) -> float:
     return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
-
-
-def _phi_tool_from_transform(T: np.ndarray) -> float:
-    T_arr = np.asarray(T, dtype=float).reshape(4, 4)
-    return float(math.atan2(T_arr[1, 1], T_arr[0, 1]))
 
 
 @dataclass
@@ -35,17 +30,6 @@ class JointSpacePlanResult:
 
 
 class JointSpaceCartesianPlanner:
-    """Bounded joint-space planning stage for online commissioning.
-
-    This stage keeps optimization in reduced joint space, but uses the Cartesian
-    reference path only to define sparse anchor poses. It intentionally avoids
-    nonlinear optimization in the BT service path and instead uses:
-    1. sparse Cartesian anchors along the reference path
-    2. steady-state joint solves at those anchors
-    3. deterministic joint-space spline fitting through solved anchors
-    4. TOPP-RA after the path is fixed
-    """
-
     def __init__(
         self,
         *,
@@ -67,16 +51,20 @@ class JointSpaceCartesianPlanner:
         self._smoothing_passes = int(max(0, smoothing_passes))
         self._max_projection_waypoints = int(max(0, max_projection_waypoints))
 
-    def _reduced_q_from_dynamic_map(self, q_map: Mapping[str, float]) -> np.ndarray:
+    def _reduced_q_from_map(self, q_map: Mapping[str, float]) -> np.ndarray:
         return np.asarray(
             [float(q_map.get(name, 0.0)) for name in self._reduced_joint_names],
             dtype=float,
         )
 
-    def _reduced_q_from_actuated_map(self, q_map: Mapping[str, float]) -> np.ndarray:
-        return np.asarray(
-            [float(q_map.get(name, 0.0)) for name in self._reduced_joint_names],
-            dtype=float,
+    def _failure(self, message: str, n_joints: int) -> JointSpacePlanResult:
+        return JointSpacePlanResult(
+            success=False,
+            message=message,
+            q_waypoints=np.zeros((0, n_joints), dtype=float),
+            xyz_waypoints=np.zeros((0, 3), dtype=float),
+            yaw_waypoints=np.zeros(0, dtype=float),
+            diagnostics={},
         )
 
     def _complete_dynamic_map(
@@ -108,29 +96,11 @@ class JointSpaceCartesianPlanner:
             {name: float(q[i]) for i, name in enumerate(self._reduced_joint_names)},
             q_seed=q_seed,
         )
-        q_pin = self._joint_goal_stage._kin.pin.neutral(self._joint_goal_stage._kin.model)
-        model = self._joint_goal_stage._kin.model
-        for jid in range(1, model.njoints):
-            name = str(model.names[jid])
-            if name not in q_map:
-                continue
-            j = model.joints[jid]
-            nq = int(j.nq)
-            iq = int(j.idx_q)
-            val = float(q_map[name])
-            if nq == 1:
-                q_pin[iq] = val
-            elif nq == 2 and int(j.nv) == 1:
-                q_pin[iq] = math.cos(val)
-                q_pin[iq + 1] = math.sin(val)
-        fk = self._joint_goal_stage._kin.forward_kinematics(
-            q_pin,
+        xyz, yaw, _ = self._joint_goal_stage._kin.pose_from_joint_map(
+            q_map,
             base_frame="world",
             end_frame=self._joint_goal_stage.config.target_frame,
         )
-        T = np.asarray(fk["base_to_end"]["homogeneous"], dtype=float)
-        xyz = np.asarray(T[:3, 3], dtype=float).reshape(3)
-        yaw = _phi_tool_from_transform(T)
         return xyz, yaw, q_map
 
     def _clip_to_joint_limits(self, q_waypoints: np.ndarray) -> np.ndarray:
@@ -143,31 +113,24 @@ class JointSpaceCartesianPlanner:
                 out[:, j] = np.minimum(out[:, j], float(hi))
         return out
 
-    def _smooth_waypoints(self, q_waypoints: np.ndarray, locked_mask: np.ndarray | None = None) -> np.ndarray:
+    def _smooth_waypoints(self, q_waypoints: np.ndarray) -> np.ndarray:
         out = np.asarray(q_waypoints, dtype=float).copy()
         if out.shape[0] <= 2:
             return out
-        locked = np.zeros(out.shape[0], dtype=bool) if locked_mask is None else np.asarray(locked_mask, dtype=bool)
         for _ in range(self._smoothing_passes):
             prev = out.copy()
-            smoothed = 0.25 * prev[:-2, :] + 0.5 * prev[1:-1, :] + 0.25 * prev[2:, :]
-            mutable = ~locked[1:-1]
-            out[1:-1, :][mutable, :] = smoothed[mutable, :]
+            out[1:-1, :] = 0.25 * prev[:-2, :] + 0.5 * prev[1:-1, :] + 0.25 * prev[2:, :]
             out = self._clip_to_joint_limits(out)
         return out
 
     @staticmethod
     def _select_anchor_indices(n_wp: int, max_interior: int) -> list[int]:
-        if n_wp < 2:
-            return [0]
         if n_wp <= 2:
-            return [0, n_wp - 1]
+            return [0] if n_wp < 2 else [0, n_wp - 1]
         interior = list(range(1, n_wp - 1))
         if max_interior <= 0 or len(interior) <= max_interior:
             return [0, *interior, n_wp - 1]
-        sampled = np.linspace(0, len(interior) - 1, max_interior, dtype=int)
-        indices = sorted({0, n_wp - 1, *[interior[int(i)] for i in sampled]})
-        return indices
+        return sorted({0, n_wp - 1, *np.asarray(interior, dtype=int)[np.linspace(0, len(interior) - 1, max_interior, dtype=int)]})
 
     @staticmethod
     def _parameterize_waypoints(points: np.ndarray) -> np.ndarray:
@@ -190,17 +153,14 @@ class JointSpaceCartesianPlanner:
         u_anchor_arr = np.asarray(u_anchor, dtype=float).reshape(-1)
         q_anchor_arr = np.asarray(q_anchor, dtype=float)
         u_query_arr = np.asarray(u_query, dtype=float).reshape(-1)
-        n_anchor, n_joint = q_anchor_arr.shape
-        q_out = np.zeros((u_query_arr.size, n_joint), dtype=float)
-        if n_anchor == 1:
-            q_out[:, :] = q_anchor_arr[0, :]
-            return q_out
-        for j in range(n_joint):
-            interp = PchipInterpolator(u_anchor_arr, q_anchor_arr[:, j], extrapolate=False)
-            vals = np.asarray(interp(u_query_arr), dtype=float)
-            vals[0] = float(q_anchor_arr[0, j])
-            vals[-1] = float(q_anchor_arr[-1, j])
-            q_out[:, j] = vals
+        if q_anchor_arr.shape[0] == 1:
+            return np.repeat(q_anchor_arr[:1, :], u_query_arr.size, axis=0)
+        q_out = np.column_stack(
+            [np.asarray(PchipInterpolator(u_anchor_arr, q_anchor_arr[:, j], extrapolate=False)(u_query_arr), dtype=float)
+             for j in range(q_anchor_arr.shape[1])]
+        )
+        q_out[0, :] = q_anchor_arr[0, :]
+        q_out[-1, :] = q_anchor_arr[-1, :]
         return q_out
 
     @staticmethod
@@ -232,13 +192,7 @@ class JointSpaceCartesianPlanner:
         reference_yaw: np.ndarray,
         anchor_xyz: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, dict[str, float]]:
-        xyz_out = []
-        yaw_out = []
-        xyz_err = 0.0
-        yaw_err = 0.0
-        pos_errs = []
-        yaw_errs = []
-        polyline_errs = []
+        xyz_out, yaw_out, pos_errs, yaw_errs, polyline_errs = [], [], [], [], []
         q_seed_map = {
             str(name): float(q_waypoints[0, i]) for i, name in enumerate(self._reduced_joint_names)
         }
@@ -246,25 +200,21 @@ class JointSpaceCartesianPlanner:
             xyz_i, yaw_i, q_seed_map = self.fk_world_pose(q, q_seed=q_seed_map)
             xyz_out.append(xyz_i)
             yaw_out.append(yaw_i)
-            xyz_delta = xyz_i - reference_xyz[i, :]
-            pos_err = float(np.linalg.norm(xyz_delta))
-            pos_errs.append(pos_err)
-            xyz_err += float(np.dot(xyz_delta, xyz_delta))
-            yaw_delta = _wrap_to_pi(yaw_i - float(reference_yaw[i]))
-            yaw_abs = float(abs(yaw_delta))
-            yaw_errs.append(yaw_abs)
-            yaw_err += float(yaw_delta * yaw_delta)
+            pos_errs.append(float(np.linalg.norm(xyz_i - reference_xyz[i, :])))
+            yaw_errs.append(abs(_wrap_to_pi(yaw_i - float(reference_yaw[i]))))
             if anchor_xyz is not None:
                 polyline_errs.append(self._point_to_polyline_distance(xyz_i, anchor_xyz))
+        xyz_arr = np.asarray(xyz_out, dtype=float)
+        yaw_out_arr = np.asarray(yaw_out, dtype=float)
         pos_arr = np.asarray(pos_errs, dtype=float)
         yaw_arr = np.asarray(yaw_errs, dtype=float)
         polyline_arr = np.asarray(polyline_errs, dtype=float) if polyline_errs else np.zeros(0, dtype=float)
         return (
-            np.asarray(xyz_out, dtype=float),
-            np.asarray(yaw_out, dtype=float),
+            xyz_arr,
+            yaw_out_arr,
             {
-                "cartesian_position_cost": float(xyz_err),
-                "cartesian_yaw_cost": float(yaw_err),
+                "cartesian_position_cost": float(np.sum((xyz_arr - reference_xyz) ** 2)),
+                "cartesian_yaw_cost": float(np.sum(np.square([_wrap_to_pi(y - float(r)) for y, r in zip(yaw_out_arr, reference_yaw)]))),
                 "max_position_error_m": float(np.max(pos_arr)),
                 "mean_position_error_m": float(np.mean(pos_arr)),
                 "final_position_error_m": float(pos_arr[-1]),
@@ -296,22 +246,11 @@ class JointSpaceCartesianPlanner:
         reference_yaw_arr = np.asarray(reference_yaw, dtype=float).reshape(-1)
 
         if q_start_arr.shape != q_goal_arr.shape:
-            return JointSpacePlanResult(
-                success=False,
-                message="joint-space planner requires matching start/goal dimensions",
-                q_waypoints=np.zeros((0, 0), dtype=float),
-                xyz_waypoints=np.zeros((0, 3), dtype=float),
-                yaw_waypoints=np.zeros(0, dtype=float),
-                diagnostics={},
-            )
+            return self._failure("joint-space planner requires matching start/goal dimensions", 0)
         if reference_xyz_arr.shape[0] != reference_yaw_arr.shape[0] or reference_xyz_arr.shape[0] < 2:
-            return JointSpacePlanResult(
-                success=False,
-                message="joint-space planner requires at least two Cartesian reference waypoints",
-                q_waypoints=np.zeros((0, q_start_arr.shape[0]), dtype=float),
-                xyz_waypoints=np.zeros((0, 3), dtype=float),
-                yaw_waypoints=np.zeros(0, dtype=float),
-                diagnostics={},
+            return self._failure(
+                "joint-space planner requires at least two Cartesian reference waypoints",
+                q_start_arr.shape[0],
             )
 
         n_wp = int(reference_xyz_arr.shape[0])
@@ -321,21 +260,15 @@ class JointSpaceCartesianPlanner:
         anchor_indices = self._select_anchor_indices(n_wp, self._max_projection_waypoints)
         anchor_xyz = []
         anchor_yaw = []
-        q_anchor = []
+        q_anchor, anchor_xyz, anchor_yaw = [], [], []
         seed_map = {name: float(q_start_arr[i]) for i, name in enumerate(self._reduced_joint_names)}
         solved_anchor_count = 0
         dropped_anchor_count = 0
 
-        for idx, i in enumerate(anchor_indices):
-            is_endpoint = i == 0 or i == (n_wp - 1)
-            if i == 0:
-                q_anchor.append(q_start_arr.copy())
-                anchor_xyz.append(reference_xyz_arr[i, :].copy())
-                anchor_yaw.append(float(reference_yaw_arr[i]))
-                solved_anchor_count += 1
-                continue
-            if i == (n_wp - 1):
-                q_anchor.append(q_goal_arr.copy())
+        for i in anchor_indices:
+            is_endpoint = i in {0, n_wp - 1}
+            if is_endpoint:
+                q_anchor.append(q_start_arr.copy() if i == 0 else q_goal_arr.copy())
                 anchor_xyz.append(reference_xyz_arr[i, :].copy())
                 anchor_yaw.append(float(reference_yaw_arr[i]))
                 solved_anchor_count += 1
@@ -346,36 +279,23 @@ class JointSpaceCartesianPlanner:
                 q_seed=seed_map,
             )
             if solve.success:
-                q_anchor.append(self._reduced_q_from_actuated_map(solve.q_actuated))
+                q_anchor.append(self._reduced_q_from_map(solve.q_actuated))
                 anchor_xyz.append(reference_xyz_arr[i, :].copy())
                 anchor_yaw.append(float(reference_yaw_arr[i]))
                 seed_map = dict(solve.q_dynamic)
                 solved_anchor_count += 1
-            elif is_endpoint:
-                return JointSpacePlanResult(
-                    success=False,
-                    message=f"anchor solve failed at endpoint index {i}: {solve.message}",
-                    q_waypoints=np.zeros((0, q_start_arr.shape[0]), dtype=float),
-                    xyz_waypoints=np.zeros((0, 3), dtype=float),
-                    yaw_waypoints=np.zeros(0, dtype=float),
-                    diagnostics={},
-                )
             else:
                 dropped_anchor_count += 1
 
         q_anchor_arr = np.asarray(q_anchor, dtype=float)
         anchor_xyz_arr = np.asarray(anchor_xyz, dtype=float).reshape(-1, 3)
         if q_anchor_arr.shape[0] < 2:
-            return JointSpacePlanResult(
-                success=False,
+            return self._failure(
                 message=(
                     "anchor solve failed: need at least start and goal anchors; "
                     f"got {q_anchor_arr.shape[0]} solved anchors"
                 ),
-                q_waypoints=np.zeros((0, q_start_arr.shape[0]), dtype=float),
-                xyz_waypoints=np.zeros((0, 3), dtype=float),
-                yaw_waypoints=np.zeros(0, dtype=float),
-                diagnostics={},
+                n_joints=q_start_arr.shape[0],
             )
 
         u_reference = self._parameterize_waypoints(reference_xyz_arr)
@@ -391,47 +311,27 @@ class JointSpaceCartesianPlanner:
         if self._smoothing_passes > 0:
             q_waypoints = self._smooth_waypoints(q_waypoints)
 
-        initial_xyz_out, initial_yaw_out, initial_diag = self._evaluate_cartesian_tracking(
-            q_initial,
-            reference_xyz_arr,
-            reference_yaw_arr,
-            anchor_xyz=anchor_xyz_arr,
-        )
-        candidate_xyz_out, candidate_yaw_out, candidate_diag = self._evaluate_cartesian_tracking(
-            q_waypoints,
-            reference_xyz_arr,
-            reference_yaw_arr,
-            anchor_xyz=anchor_xyz_arr,
-        )
-        initial_cost = float(
-            initial_diag["cartesian_position_cost"] + initial_diag["cartesian_yaw_cost"]
-        )
-        candidate_cost = float(
-            candidate_diag["cartesian_position_cost"] + candidate_diag["cartesian_yaw_cost"]
-        )
-        if candidate_cost <= initial_cost + 1e-9:
-            xyz_out = candidate_xyz_out
-            yaw_out = candidate_yaw_out
-            final_diag = candidate_diag
-            final_cost = candidate_cost
-        else:
-            q_waypoints = q_initial
-            xyz_out = initial_xyz_out
-            yaw_out = initial_yaw_out
-            final_diag = initial_diag
-            final_cost = initial_cost
+        tracked = [
+            (q_initial, *self._evaluate_cartesian_tracking(q_initial, reference_xyz_arr, reference_yaw_arr, anchor_xyz=anchor_xyz_arr)),
+            (q_waypoints, *self._evaluate_cartesian_tracking(q_waypoints, reference_xyz_arr, reference_yaw_arr, anchor_xyz=anchor_xyz_arr)),
+        ]
+        initial_diag = tracked[0][3]
+        initial_cost = float(tracked[0][3]["cartesian_position_cost"] + tracked[0][3]["cartesian_yaw_cost"])
+        candidate_cost = float(tracked[1][3]["cartesian_position_cost"] + tracked[1][3]["cartesian_yaw_cost"])
+        best = tracked[1] if candidate_cost <= initial_cost + 1e-9 else tracked[0]
+        q_waypoints, xyz_out, yaw_out, final_diag = best
+        final_cost = candidate_cost if best is tracked[1] else initial_cost
 
         fallback_used = bool(q_anchor_arr.shape[0] == 2)
-        message = (
-            "joint-space anchor spline ANCHOR_V1"
-            f" (solved {solved_anchor_count}/{len(anchor_indices)} anchors, "
-            f"dropped {dropped_anchor_count} interior anchors"
-            + (", direct start-goal fallback" if fallback_used else "")
-            + ")"
-        )
         return JointSpacePlanResult(
             success=True,
-            message=message,
+            message=(
+                "joint-space anchor spline"
+                f" (solved {solved_anchor_count}/{len(anchor_indices)} anchors, "
+                f"dropped {dropped_anchor_count} interior anchors"
+                + (", direct start-goal fallback" if fallback_used else "")
+                + ")"
+            ),
             q_waypoints=q_waypoints,
             xyz_waypoints=xyz_out,
             yaw_waypoints=yaw_out,

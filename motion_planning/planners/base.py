@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from motion_planning.core.types import PlannerRequest, PlannerResult
+from motion_planning.types import PlannerRequest, PlannerResult
 
 
 class Planner(Protocol):

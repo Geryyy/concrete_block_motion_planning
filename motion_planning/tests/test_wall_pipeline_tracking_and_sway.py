@@ -7,9 +7,9 @@ import numpy as np
 import pytest
 
 from motion_planning import Scene
-from motion_planning.core.types import Scenario, TrajectoryRequest
-from motion_planning.mechanics.analytic import create_crane_config
-from motion_planning.pipeline import run_geometric_planning
+from motion_planning.types import Scenario, TrajectoryRequest
+from motion_planning.mechanics import create_crane_config
+from motion_planning import run_geometric_planning
 from motion_planning.scenarios import ScenarioLibrary
 from motion_planning_tools.simulation.mujoco_pd_replay import replay_trajectory_with_pd
 from motion_planning.trajectory.cartesian_path_following import (

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from motion_planning.core.types import PlannerRequest, Scenario
+from motion_planning.types import PlannerRequest, Scenario
 from motion_planning.geometry.arm_model import (
     DEFAULT_PZS100_RAIL_POSITION_M,
     CraneArmCollisionModel,

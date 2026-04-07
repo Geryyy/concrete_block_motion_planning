@@ -48,6 +48,18 @@ class JointSpaceGlobalPathPlanner:
     def __init__(self, jsp) -> None:
         self.jsp, self.names = jsp, list(jsp._reduced_joint_names)
 
+    @staticmethod
+    def _sample_joint_bspline(ctrl: np.ndarray, u: np.ndarray) -> np.ndarray:
+        p = np.asarray(ctrl, dtype=float).reshape(4, -1)
+        t = np.asarray(u, dtype=float).reshape(-1, 1)
+        omt = 1.0 - t
+        return (
+            (omt ** 3) * p[0]
+            + 3.0 * (omt ** 2) * t * p[1]
+            + 3.0 * omt * (t ** 2) * p[2]
+            + (t ** 3) * p[3]
+        )
+
     def plan(self, req: JointSpaceGlobalPathRequest) -> JointSpaceGlobalPathResult:
         q0, qN = np.asarray(req.q_start, float), np.asarray(req.q_goal, float)
         if q0.shape != qN.shape:
@@ -64,7 +76,7 @@ class JointSpaceGlobalPathPlanner:
 
         def E(x: np.ndarray) -> dict[str, Any]:
             a = self._clip(np.vstack([q0, np.asarray(x, float).reshape(2, -1), qN])); a[0], a[-1] = q0, qN
-            q = self._clip(self.jsp._fit_joint_spline(u_anchor=self.jsp._parameterize_waypoints(a), q_anchor=a, u_query=np.linspace(0.0, 1.0, max(5, int(c["sample_count"])))))
+            q = self._clip(self._sample_joint_bspline(a, np.linspace(0.0, 1.0, max(5, int(c["sample_count"])))))
             q[0], q[-1] = q0, qN
             xyz, yaw, maps, via_xyz = [], [], [], []
             seed = dict(s0) if s0 is not None else {n: float(q0[i]) for i, n in enumerate(self.names)}
@@ -80,7 +92,7 @@ class JointSpaceGlobalPathPlanner:
             dq, ddq = np.diff(q, axis=0), np.diff(q, n=2, axis=0)
             a0 = float(np.degrees(np.arccos(np.clip(np.dot(_n(xyz[1] - xyz[0]), d0), -1.0, 1.0))))
             aN = float(np.degrees(np.arccos(np.clip(np.dot(_n(xyz[-1] - xyz[-2]), dN), -1.0, 1.0))))
-            return {"q": q, "vias": a[1:-1], "xyz": xyz, "yaw": yaw, "maps": maps, "via_xyz": via_xyz, "j": float(c["w_length"] * np.sum(np.linalg.norm(dq, axis=1)) + c["w_smooth"] * np.sum(ddq * ddq) + c["w_collision"] * np.sum(np.maximum(0.0, c["safety_margin"] - d) ** 2) + c["w_penetration"] * np.sum(np.maximum(0.0, -d) ** 2) + c["w_approach"] * ((a0 / 180.0) ** 2 + (aN / 180.0) ** 2)), "min_d": float(np.min(d)), "mean_d": float(np.mean(d)), "len": float(np.sum(np.linalg.norm(dq, axis=1))), "smooth": float(np.sum(ddq * ddq)), "a0": a0, "aN": aN}
+            return {"q": q, "ctrl": a, "vias": a[1:-1], "xyz": xyz, "yaw": yaw, "maps": maps, "via_xyz": via_xyz, "j": float(c["w_length"] * np.sum(np.linalg.norm(dq, axis=1)) + c["w_smooth"] * np.sum(ddq * ddq) + c["w_collision"] * np.sum(np.maximum(0.0, c["safety_margin"] - d) ** 2) + c["w_penetration"] * np.sum(np.maximum(0.0, -d) ** 2) + c["w_approach"] * ((a0 / 180.0) ** 2 + (aN / 180.0) ** 2)), "min_d": float(np.min(d)), "mean_d": float(np.mean(d)), "len": float(np.sum(np.linalg.norm(dq, axis=1))), "smooth": float(np.sum(ddq * ddq)), "a0": a0, "aN": aN}
 
         def ok(r: dict[str, Any], dmin: float) -> bool:
             return r["min_d"] >= dmin
@@ -88,7 +100,7 @@ class JointSpaceGlobalPathPlanner:
         best = {"r": E(x0)}
         opt = None if ok(best["r"], max(-1e-3, c["safety_margin"] - 5e-3)) else minimize(lambda x: best.__setitem__("r", E(x)) or best["r"]["j"], x0=x0, method="Powell", bounds=bounds, options={"maxiter": int(c["maxiter"]), "disp": False})
         r, success = best["r"], ok(best["r"], -1e-3)
-        return JointSpaceGlobalPathResult(success, f"joint-space global via-2 path {'ok' if success else 'needs review'}: min clearance={r['min_d']:+.3f} m", np.asarray(r["q"], float), np.asarray(r["vias"], float), np.asarray(r["xyz"], float), np.asarray(r["yaw"], float), {"via_point_count": 2.0, "optimizer_success": bool(True if opt is None else opt.success), "optimizer_iterations": float(0 if opt is None else getattr(opt, "nit", 0) or 0), "objective_final": float(r["j"]), "min_signed_distance_m": float(r["min_d"]), "mean_signed_distance_m": float(r["mean_d"]), "path_length_joint": float(r["len"]), "smoothness_cost": float(r["smooth"]), "start_approach_alignment_deg": float(r["a0"]), "goal_approach_alignment_deg": float(r["aN"]), "q_maps_path": list(r["maps"]), "via_points": np.asarray(r["vias"], float), "via_tcp_xyz": np.asarray(r["via_xyz"], float), "reference_path_backend": "joint_space_global_via2", "reference_path_fallback_used": 0.0, "joint_anchor_fallback_used": 0.0})
+        return JointSpaceGlobalPathResult(success, f"joint-space global via-2 path {'ok' if success else 'needs review'}: min clearance={r['min_d']:+.3f} m", np.asarray(r["q"], float), np.asarray(r["vias"], float), np.asarray(r["xyz"], float), np.asarray(r["yaw"], float), {"via_point_count": 2.0, "optimizer_success": bool(True if opt is None else opt.success), "optimizer_iterations": float(0 if opt is None else getattr(opt, "nit", 0) or 0), "objective_final": float(r["j"]), "min_signed_distance_m": float(r["min_d"]), "mean_signed_distance_m": float(r["mean_d"]), "path_length_joint": float(r["len"]), "smoothness_cost": float(r["smooth"]), "start_approach_alignment_deg": float(r["a0"]), "goal_approach_alignment_deg": float(r["aN"]), "q_maps_path": list(r["maps"]), "q_control_points": np.asarray(r["ctrl"], float), "via_points": np.asarray(r["vias"], float), "via_tcp_xyz": np.asarray(r["via_xyz"], float), "reference_path_backend": "joint_space_global_via2", "reference_path_fallback_used": 0.0, "joint_anchor_fallback_used": 0.0})
 
     def _step(self, q: np.ndarray, direction: np.ndarray, step_m: float, q_seed: Mapping[str, float] | None = None) -> np.ndarray:
         q = np.asarray(q, float).reshape(-1)

@@ -11,7 +11,7 @@ from motion_planning.trajectory.cartesian_path_following import (
     CartesianPathFollowingConfig,
     CartesianPathFollowingOptimizer,
 )
-from motion_planning.mechanics.analytic import create_crane_config
+from motion_planning.mechanics import create_crane_config
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -90,7 +90,7 @@ def test_config_instantiation() -> None:
 @pytest.mark.skipif(not _acados_ready(), reason="acados/casadi/pinocchio runtime not available")
 def test_cartesian_optimizer_smoke_straight_line() -> None:
     """Optimizer solves to status=0 with straight-line Cartesian fallback."""
-    from motion_planning.core.types import TrajectoryRequest
+    from motion_planning.types import TrajectoryRequest
 
     cfg = CartesianPathFollowingConfig(
         urdf_path=DEFAULT_URDF,
@@ -133,7 +133,7 @@ def test_cartesian_optimizer_smoke_straight_line() -> None:
 @pytest.mark.skipif(not _acados_ready(), reason="acados/casadi/pinocchio runtime not available")
 def test_cartesian_optimizer_with_explicit_ctrl_pts() -> None:
     """Optimizer solves to status=0 with explicit Cartesian control points."""
-    from motion_planning.core.types import TrajectoryRequest
+    from motion_planning.types import TrajectoryRequest
 
     n_ctrl = 4
     cfg = CartesianPathFollowingConfig(
@@ -202,7 +202,7 @@ def test_cartesian_optimizer_large_motion() -> None:
     which avoids the indefinite Hessian that caused MINSTEP failures under the
     previous EXTERNAL + EXACT configuration.
     """
-    from motion_planning.core.types import TrajectoryRequest
+    from motion_planning.types import TrajectoryRequest
 
     cfg = CartesianPathFollowingConfig(
         urdf_path=DEFAULT_URDF,
@@ -235,7 +235,7 @@ def test_cartesian_optimizer_large_motion() -> None:
 @pytest.mark.skipif(not _acados_ready(), reason="acados/casadi/pinocchio runtime not available")
 def test_cartesian_optimizer_fixed_time_workaround() -> None:
     """Fixed-time mode keeps the trajectory duration pinned to the requested T."""
-    from motion_planning.core.types import TrajectoryRequest
+    from motion_planning.types import TrajectoryRequest
 
     cfg = CartesianPathFollowingConfig(
         urdf_path=DEFAULT_URDF,

@@ -25,8 +25,8 @@ if pkg_root not in sys.path:
 if scripts_root not in sys.path:
     sys.path.insert(0, scripts_root)
 
-from motion_planning.mechanics.analytic import AnalyticModelConfig, CraneSteadyState, ModelDescription
-from motion_planning.mechanics.analytic.pinocchio_utils import q_map_to_pin_q
+from motion_planning.mechanics import AnalyticModelConfig, CraneSteadyState, ModelDescription
+from motion_planning.mechanics.pinocchio_utils import q_map_to_pin_q
 from motion_planning.standalone.scenarios import make_default_scenarios
 
 

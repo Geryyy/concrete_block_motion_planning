@@ -3,11 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence, Tuple, Union
 
-from motion_planning.core.types import PlannerResult, Scenario
-from motion_planning.core.world_model import WorldModel
+from motion_planning.scenario import from_worldmodel_scenario
+from motion_planning.types import PlannerRequest, PlannerResult, Scenario
+from motion_planning.world_model import WorldModel
 from motion_planning.geometry.scene import Scene as GeometryScene
-from motion_planning.io.optimized_params import canonical_method_name, load_optimized_planner_params
-from motion_planning.pipeline.geometric_stage import run_geometric_planning
+from motion_planning.optimized_params import canonical_method_name, load_optimized_planner_params
+from motion_planning.planners.factory import create_planner
 
 
 def _vec3(v: Sequence[float]) -> Tuple[float, float, float]:
@@ -33,6 +34,37 @@ def _scene_from_input(world_model: Union[WorldModel, GeometryScene]) -> Geometry
     raise TypeError(
         "world_model must be WorldModel or geometry.scene.Scene, "
         f"got {type(world_model)!r}"
+    )
+
+
+def run_geometric_planning(
+    *,
+    scenario: Scenario,
+    method: str,
+    config: Dict[str, Any],
+    options: Dict[str, Any],
+) -> PlannerResult:
+    return create_planner(method).plan(
+        PlannerRequest(scenario=scenario, config=config, options=options)
+    )
+
+
+def run_geometric_planning_from_benchmark_params(
+    *,
+    world_scenario: Any,
+    method: str,
+    optimized_params_file: str | Path,
+) -> PlannerResult:
+    params = load_optimized_planner_params(optimized_params_file)
+    canonical = canonical_method_name(method)
+    if canonical not in params:
+        raise KeyError(f"Method '{canonical}' not found in optimized params: {optimized_params_file}")
+    entry = params[canonical]
+    return run_geometric_planning(
+        scenario=from_worldmodel_scenario(world_scenario),
+        method=canonical,
+        config=dict(entry["config"]),
+        options=dict(entry["options"]),
     )
 
 

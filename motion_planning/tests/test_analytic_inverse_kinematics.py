@@ -3,12 +3,12 @@ from __future__ import annotations
 import pytest
 import numpy as np
 
-from motion_planning.mechanics.analytic import (
+from motion_planning.mechanics import (
     AnalyticInverseKinematics,
     AnalyticModelConfig,
     ModelDescription,
 )
-from motion_planning.kinematics.crane import CraneKinematics
+from motion_planning.mechanics import CraneKinematics
 
 
 @pytest.fixture(scope="module")
@@ -79,6 +79,12 @@ def _sample_q_within_urdf_limits(model, cfg: AnalyticModelConfig, rng: np.random
             iq = int(joint.idx_q)
             lo = float(model.lowerPositionLimit[iq])
             hi = float(model.upperPositionLimit[iq])
+            if jn in cfg.joint_position_overrides:
+                lo_ov, hi_ov = cfg.joint_position_overrides[jn]
+                if lo_ov is not None:
+                    lo = max(lo, float(lo_ov)) if np.isfinite(lo) else float(lo_ov)
+                if hi_ov is not None:
+                    hi = min(hi, float(hi_ov)) if np.isfinite(hi) else float(hi_ov)
             if np.isfinite(lo) and np.isfinite(hi):
                 q[jn] = float(rng.uniform(lo, hi))
             else:

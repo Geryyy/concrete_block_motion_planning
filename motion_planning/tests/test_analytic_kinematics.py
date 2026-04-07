@@ -3,9 +3,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from motion_planning.kinematics.crane import CraneKinematics
-from motion_planning.mechanics.analytic import AnalyticModelConfig, ModelDescription
-from motion_planning.mechanics.analytic.pinocchio_utils import fk_homogeneous, joint_bounds, q_map_to_pin_q
+from motion_planning.mechanics import CraneKinematics
+from motion_planning.mechanics import AnalyticModelConfig, ModelDescription
+from motion_planning.mechanics import phi_tool_from_rotation, phi_tool_from_transform, pose_from_pos_yaw
+from motion_planning.mechanics.pinocchio_utils import fk_homogeneous, joint_bounds, q_map_to_pin_q
 
 
 @pytest.fixture(scope="module")
@@ -58,3 +59,12 @@ def test_joint_bounds_readable(desc: ModelDescription) -> None:
     lo, hi = joint_bounds(desc.model, "theta2_boom_joint")
     assert np.isfinite(lo) and np.isfinite(hi)
     assert hi > lo
+
+
+def test_phi_tool_pose_convention_roundtrip() -> None:
+    pos = np.array([1.0, 2.0, 3.0], dtype=float)
+    yaw = 0.37
+    T = pose_from_pos_yaw(pos, yaw)
+    assert np.allclose(T[:3, 3], pos)
+    assert abs(phi_tool_from_transform(T) - yaw) < 1e-12
+    assert abs(phi_tool_from_rotation(T[:3, :3]) - yaw) < 1e-12

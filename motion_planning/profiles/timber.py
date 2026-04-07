@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from motion_planning.contracts import JointMapping, RobotProfile
+from motion_planning.robot_profile import JointMapping, RobotProfile
 
 
 TIMBER_COMPAT_PROFILE = RobotProfile(

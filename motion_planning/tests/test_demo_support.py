@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from motion_planning.standalone.demo_support import is_cbs_stack
+from motion_planning.standalone import is_cbs_stack
 
 
 def test_is_cbs_stack_matches_only_supported_standalone_name() -> None:

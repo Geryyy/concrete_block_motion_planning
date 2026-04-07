@@ -6,8 +6,8 @@ from typing import Any, Dict
 import numpy as np
 
 from motion_planning.geometry.spline_opt import optimize_bspline_path
-from motion_planning.core.spline import BSplinePath
-from motion_planning.core.types import PlannerRequest, PlannerResult
+from motion_planning.spline import BSplinePath
+from motion_planning.types import PlannerRequest, PlannerResult
 
 
 @dataclass

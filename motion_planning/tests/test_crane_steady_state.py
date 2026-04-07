@@ -2,16 +2,9 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-import pinocchio as pin
 
-from motion_planning.kinematics.crane import CraneKinematics
-from motion_planning.mechanics.analytic import AnalyticModelConfig, CraneSteadyState, ModelDescription
-from motion_planning.mechanics.analytic.pinocchio_utils import q_map_to_pin_q
-
-
-def _phi_tool_from_transform(T: np.ndarray) -> float:
-    T_arr = np.asarray(T, dtype=float).reshape(4, 4)
-    return float(np.arctan2(T_arr[1, 1], T_arr[0, 1]))
+from motion_planning.mechanics import CraneKinematics
+from motion_planning.mechanics import AnalyticModelConfig, CraneSteadyState, ModelDescription
 
 
 @pytest.fixture(scope="module")
@@ -49,11 +42,11 @@ def test_steady_state_balances_passive_and_respects_theta3_cap(
     assert completed.success, completed.message
     q_seed = dict(completed.q_dynamic)
     q_seed["q5_small_telescope"] = q_seed["q4_big_telescope"]
-    q_seed_pin = q_map_to_pin_q(pin_kin.model, q_seed, pin_module=pin)
-    fk_seed = pin_kin.forward_kinematics(q_seed_pin, base_frame=cfg.base_frame, end_frame=cfg.target_frame)
-    T_target = np.asarray(fk_seed["base_to_end"]["homogeneous"], dtype=float)
-    p_target = T_target[:3, 3].copy()
-    yaw_target = _phi_tool_from_transform(T_target)
+    p_target, yaw_target, _ = pin_kin.pose_from_joint_map(
+        q_seed,
+        base_frame=cfg.base_frame,
+        end_frame=cfg.target_frame,
+    )
 
     res = ss.compute(target_pos=p_target, target_yaw=yaw_target, q_seed=q_seed)
     assert res.success, res.message

@@ -9,13 +9,13 @@ import numpy as np
 
 from motion_planning.geometry.spline_opt import yaw_deg_to_quat
 try:
-    from motion_planning.core.types import PlannerRequest, Scenario
+    from motion_planning.types import PlannerRequest, Scenario
     from motion_planning.planners.factory import create_planner
 except ModuleNotFoundError:
     repo_root = Path(__file__).resolve().parents[2]
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
-    from motion_planning.core.types import PlannerRequest, Scenario
+    from motion_planning.types import PlannerRequest, Scenario
     from motion_planning.planners.factory import create_planner
 
 from .metrics import evaluate_path_metrics, make_eval_context, scenario_score

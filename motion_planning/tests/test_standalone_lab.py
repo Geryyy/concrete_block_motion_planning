@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from motion_planning.standalone.scenarios import make_default_scenarios
-from motion_planning.standalone.stacks import STACK_REGISTRY
+from motion_planning import STACK_REGISTRY, make_default_scenarios
 
 
 def test_default_scenarios_have_expected_entries() -> None:

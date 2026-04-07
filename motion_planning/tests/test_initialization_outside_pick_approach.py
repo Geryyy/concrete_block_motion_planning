@@ -14,14 +14,14 @@ import pinocchio as pin
 import pytest
 
 from motion_planning.geometry.scene import Scene
-from motion_planning.kinematics.crane import CraneKinematics
-from motion_planning.mechanics.analytic import (
+from motion_planning.mechanics import CraneKinematics
+from motion_planning.mechanics import (
     AnalyticModelConfig,
     CraneSteadyState,
     ModelDescription,
 )
-from motion_planning.mechanics.analytic.pinocchio_utils import q_map_to_pin_q
-from motion_planning.pipeline import (
+from motion_planning.mechanics.pinocchio_utils import q_map_to_pin_q
+from motion_planning import (
     JointSpaceCartesianPlanner,
     JointSpaceGlobalPathRequest,
 )

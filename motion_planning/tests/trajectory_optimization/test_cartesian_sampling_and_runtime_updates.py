@@ -7,9 +7,9 @@ from typing import Tuple
 import numpy as np
 import pytest
 
-from motion_planning.core.types import TrajectoryRequest
-from motion_planning.kinematics import CraneKinematics
-from motion_planning.mechanics.analytic import CraneSteadyState, ModelDescription, create_crane_config
+from motion_planning.types import TrajectoryRequest
+from motion_planning.mechanics import CraneKinematics
+from motion_planning.mechanics import CraneSteadyState, ModelDescription, create_crane_config
 from motion_planning.trajectory.cartesian_path_following import (
     CartesianPathFollowingConfig,
     CartesianPathFollowingOptimizer,

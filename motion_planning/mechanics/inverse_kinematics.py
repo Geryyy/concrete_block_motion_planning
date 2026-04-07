@@ -10,6 +10,8 @@ from .config import AnalyticModelConfig
 from .crane_geometry import DEFAULT_CRANE_GEOMETRY, CraneGeometryConstants
 from .model_description import ModelDescription
 from .pinocchio_utils import fk_homogeneous, joint_bounds
+from .pose_conventions import phi_tool_from_rotation
+from .reference_states import merge_reference_seed
 
 
 def _rotvec_from_R(R: np.ndarray) -> np.ndarray:
@@ -42,11 +44,6 @@ def _rotvec_from_R(R: np.ndarray) -> np.ndarray:
         return theta * axis / n
     w = np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]], dtype=float)
     return 0.5 * theta / s * w
-
-
-def _phi_tool_from_R(R: np.ndarray) -> float:
-    R_arr = np.asarray(R, dtype=float).reshape(3, 3)
-    return float(np.arctan2(R_arr[1, 1], R_arr[0, 1]))
 
 
 @dataclass
@@ -116,6 +113,28 @@ class _IKBase:
             hi = min(hi, float(hi_ov)) if np.isfinite(hi) else float(hi_ov)
         return float(lo), float(hi)
 
+    def _sanitize_seed_value(self, joint_name: str, value: float) -> float:
+        jid = int(self._pin_model.getJointId(joint_name))
+        joint = self._pin_model.joints[jid]
+        if int(joint.nq) == 1:
+            lo, hi = self._joint_bounds(joint_name)
+            out = float(value)
+            if np.isfinite(lo):
+                out = max(out, lo)
+            if np.isfinite(hi):
+                out = min(out, hi)
+            return out
+        if int(joint.nq) == 2 and int(joint.nv) == 1:
+            return self._wrap_angle(float(value))
+        return float(value)
+
+    def _use_seed_value(self, joint_name: str, value: float) -> bool:
+        jid = int(self._pin_model.getJointId(joint_name))
+        joint = self._pin_model.joints[jid]
+        if int(joint.nq) == 2 and int(joint.nv) == 1:
+            return np.isfinite(value) and abs(float(value)) <= 10.0 * np.pi
+        return np.isfinite(value)
+
 
 class AnalyticIKSolver(_IKBase):
     """Analytic IK: fixed joints + 1D independent-joint search.
@@ -178,7 +197,7 @@ class AnalyticIKSolver(_IKBase):
         R_target = np.asarray(target_T_base_to_end[:3, :3], dtype=float)
         x_t, y_t, z_t = float(p_target[0]), float(p_target[1]), float(p_target[2])
         # Timber IK uses phiTool, i.e. the world-yaw of the K8 frame's local Y axis.
-        phi_tool = _phi_tool_from_R(R_target)
+        phi_tool = phi_tool_from_rotation(R_target)
 
         bounds = {
             "theta1_slewing_joint": self._joint_bounds("theta1_slewing_joint"),
@@ -444,7 +463,7 @@ class AnalyticIKSolver(_IKBase):
 
         T_try = self._fk(q_try, base_frame=base_frame, end_frame=end_frame)
         pos_err = float(np.linalg.norm(T_try[:3, 3] - p_target))
-        phi_try = _phi_tool_from_R(T_try[:3, :3])
+        phi_try = phi_tool_from_rotation(T_try[:3, :3])
         rot_err = float(np.arctan2(np.sin(phi_try - phi_tool), np.cos(phi_try - phi_tool)))
         rot_err = float(abs(rot_err))
 
@@ -488,7 +507,7 @@ class NumericIKSolver(_IKBase):
         T_target = np.asarray(target_T_base_to_end, dtype=float).reshape(4, 4)
         p_target = T_target[:3, 3].copy()
         R_target = T_target[:3, :3].copy()
-        phi_target = _phi_tool_from_R(R_target)
+        phi_target = phi_tool_from_rotation(R_target)
         dynamic_names = list(self._cfg.dynamic_joints)
         q_opt_names = [jn for jn in act_names if jn not in fixed]
 
@@ -522,7 +541,7 @@ class NumericIKSolver(_IKBase):
             p_cur = T_cur[:3, 3]
             R_cur = T_cur[:3, :3]
             r_pos = pos_weight * (p_cur - p_target)
-            phi_cur = _phi_tool_from_R(R_cur)
+            phi_cur = phi_tool_from_rotation(R_cur)
             phi_err = float(np.arctan2(np.sin(phi_cur - phi_target), np.cos(phi_cur - phi_target)))
             r_rot = np.array([rot_weight * phi_err], dtype=float)
             r_reg = np.sqrt(reg_seed_weight) * (x - x0_arr)
@@ -542,12 +561,17 @@ class NumericIKSolver(_IKBase):
         p_fin = T_fin[:3, 3]
         R_fin = T_fin[:3, :3]
         pos_err = float(np.linalg.norm(p_fin - p_target))
-        phi_fin = _phi_tool_from_R(R_fin)
+        phi_fin = phi_tool_from_rotation(R_fin)
         rot_err = float(abs(np.arctan2(np.sin(phi_fin - phi_target), np.cos(phi_fin - phi_target))))
 
-        success = bool(opt.success) or (pos_err <= 1e-5 and rot_err <= 1e-5)
-        status = "numeric_success" if bool(opt.success) else ("numeric_residual_success" if success else "failed")
-        msg = "IK solve converged (numeric fallback)" if success else f"IK solve failed: {opt.message}"
+        pose_ok = pos_err <= 1e-3 and rot_err <= 1e-3
+        success = pose_ok
+        status = "numeric_success" if success else "failed"
+        msg = (
+            "IK solve converged (numeric fallback)"
+            if success
+            else f"IK solve failed: {opt.message} (pos_err={pos_err:.3e}, rot_err={rot_err:.3e})"
+        )
         q_act = {jn: float(q_sol.get(jn, 0.0)) for jn in act_names}
         q_pas = {jn: float(q_sol.get(jn, 0.0)) for jn in self._cfg.passive_joints if jn in q_sol}
         return IkSolveResult(
@@ -597,13 +621,17 @@ class AnalyticInverseKinematics:
         act_names = list(actuated_joint_names) if actuated_joint_names is not None else act_default
         fixed = {str(k): float(v) for k, v in (fixed_joints or {}).items() if str(k) in dynamic_names}
 
-        seed = {jn: 0.0 for jn in dynamic_names}
+        reference_seed = merge_reference_seed(
+            None,
+            q_actuated={jn: q_seed[jn] for jn in act_names if q_seed is not None and jn in q_seed},
+        )
+        seed = {jn: self._analytic._sanitize_seed_value(jn, float(reference_seed.get(jn, 0.0))) for jn in dynamic_names}
         if q_seed is not None:
             for jn in dynamic_names:
-                if jn in q_seed:
-                    seed[jn] = float(q_seed[jn])
+                if jn in q_seed and self._analytic._use_seed_value(jn, float(q_seed[jn])):
+                    seed[jn] = self._analytic._sanitize_seed_value(jn, float(q_seed[jn]))
         for jn, v in fixed.items():
-            seed[jn] = float(v)
+            seed[jn] = self._analytic._sanitize_seed_value(jn, float(v))
 
         analytic_res = self._analytic.solve(
             target_T_base_to_end=T_target,

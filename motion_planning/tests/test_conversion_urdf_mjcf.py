@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from motion_planning.conversion import (
+from motion_planning import (
     compare_pin_models_dynamics,
     compare_pin_models_kinematics,
     compare_urdf_inertials_to_mjcf,

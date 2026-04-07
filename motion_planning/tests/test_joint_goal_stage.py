@@ -2,14 +2,8 @@ from __future__ import annotations
 
 import math
 
+from motion_planning import JointGoalStage
 import numpy as np
-
-from motion_planning.pipeline import JointGoalStage
-
-
-def _phi_tool_from_transform(T: np.ndarray) -> float:
-    T_arr = np.asarray(T, dtype=float).reshape(4, 4)
-    return float(math.atan2(T_arr[1, 1], T_arr[0, 1]))
 
 
 def test_generate_linear_preapproach_targets_offsets_along_line():
@@ -38,30 +32,11 @@ def test_joint_goal_stage_solves_world_pose_from_fk_reachable_pose():
     q_ref = dict(completed.q_dynamic)
     q_ref["q5_small_telescope"] = q_ref["q4_big_telescope"]
 
-    q_pin = np.asarray(stage._kin.pin_neutral, dtype=float).copy() if hasattr(stage._kin, "pin_neutral") else None
-    if q_pin is None:
-        import pinocchio as pin
-        q_pin = np.asarray(pin.neutral(stage._kin.model), dtype=float)
-    for jname, val in q_ref.items():
-        if not stage._kin.model.existJointName(jname):
-            continue
-        jid = int(stage._kin.model.getJointId(jname))
-        j = stage._kin.model.joints[jid]
-        iq = int(j.idx_q)
-        nq = int(j.nq)
-        nv = int(j.nv)
-        if nq == 1:
-            q_pin[iq] = float(val)
-        elif nq == 2 and nv == 1:
-            q_pin[iq] = float(np.cos(val))
-            q_pin[iq + 1] = float(np.sin(val))
-
-    fk = stage._kin.forward_kinematics(
-        q_pin, base_frame="world", end_frame="K8_tool_center_point"
+    goal_world, yaw, _ = stage._kin.pose_from_joint_map(
+        q_ref,
+        base_frame="world",
+        end_frame="K8_tool_center_point",
     )
-    T = np.asarray(fk["base_to_end"]["homogeneous"], dtype=float)
-    goal_world = T[:3, 3]
-    yaw = _phi_tool_from_transform(T)
 
     res = stage.solve_world_pose(goal_world=goal_world, target_yaw_rad=yaw, q_seed=q_ref)
     assert res.success

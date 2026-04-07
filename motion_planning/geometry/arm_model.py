@@ -213,7 +213,7 @@ class CraneArmCollisionModel:
             import pinocchio as pin
         except ImportError as exc:  # pragma: no cover
             raise ImportError("pinocchio is required for CraneArmCollisionModel") from exc
-        from motion_planning.pipeline import JointGoalStage
+        from motion_planning import JointGoalStage
 
         stage = JointGoalStage()
         self._pin = pin
@@ -261,7 +261,7 @@ class CraneArmCollisionModel:
         return np.asarray((tf @ p)[:3], dtype=float)
 
     def _frame_tf(self, q_map: Dict[str, float], frame_name: str) -> np.ndarray:
-        from motion_planning.mechanics.analytic.pinocchio_utils import fk_homogeneous
+        from motion_planning.mechanics.pinocchio_utils import fk_homogeneous
 
         try:
             return fk_homogeneous(

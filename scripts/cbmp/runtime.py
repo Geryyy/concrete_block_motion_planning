@@ -101,9 +101,9 @@ class RuntimeHelpersMixin:
             )
 
         try:
-            from motion_planning.core.types import Scenario
-            from motion_planning.io.optimized_params import canonical_method_name
-            from motion_planning.pipeline.geometric_stage import run_geometric_planning
+            from motion_planning.types import Scenario
+            from motion_planning.optimized_params import canonical_method_name
+            from motion_planning.api import run_geometric_planning
         except Exception as exc:
             return StoredGeometricPlan(
                 geometric_plan_id="",
@@ -502,7 +502,7 @@ class RuntimeHelpersMixin:
         if getattr(self, "_joint_goal_stage", None) is not None:
             return self._joint_goal_stage
         try:
-            from motion_planning.pipeline import JointGoalStage
+            from motion_planning import JointGoalStage
 
             self._joint_goal_stage = JointGoalStage()
         except Exception as exc:
@@ -514,7 +514,7 @@ class RuntimeHelpersMixin:
         if getattr(self, "_joint_space_planner", None) is not None:
             return self._joint_space_planner
         try:
-            from motion_planning.pipeline import JointSpaceCartesianPlanner
+            from motion_planning import JointSpaceCartesianPlanner
             from motion_planning.trajectory.planning_limits import load_planning_limits_yaml
             import inspect
 
@@ -1101,11 +1101,11 @@ class RuntimeHelpersMixin:
     def _initialize_planning_runtime(self) -> None:
         try:
             import pinocchio as pin
-            from motion_planning.io.optimized_params import (
+            from motion_planning.optimized_params import (
                 load_optimized_planner_params,
             )
-            from motion_planning.kinematics import CraneKinematics
-            from motion_planning.mechanics.analytic import (
+            from motion_planning.mechanics import CraneKinematics
+            from motion_planning.mechanics import (
                 CraneSteadyState,
                 ModelDescription,
                 create_crane_config,

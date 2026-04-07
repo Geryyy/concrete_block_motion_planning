@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import yaml
 
-from motion_planning.core.types import WallPlacement, WallPlan
+from motion_planning.types import WallPlacement, WallPlan
 from motion_planning.geometry import Scene
 
 

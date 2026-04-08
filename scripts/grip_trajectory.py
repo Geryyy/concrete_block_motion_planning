@@ -14,13 +14,16 @@ import numpy as np
 @dataclass
 class GripTrajectoryConfig:
     dt: float = 0.01
-    max_joint_velocity: float = 0.3  # rad/s (or m/s for prismatic)
     lift_height: float = 0.5  # meters above current position
     gripper_open_angle: float = 0.15  # radians
     gripper_close_angle: float = 0.0
-    min_segment_duration: float = 1.0  # seconds
     default_block_radius: float = 0.30
     default_block_length: float = 0.90
+    # Per-segment durations in seconds (for commissioning)
+    duration_gripper_open: float = 2.0
+    duration_descend: float = 5.0
+    duration_gripper_close: float = 2.0
+    duration_lift: float = 5.0
 
 
 @dataclass
@@ -59,19 +62,9 @@ def cosine_interpolate(
     return positions, velocities, accelerations, times
 
 
-def estimate_duration(
-    q_start: np.ndarray,
-    q_end: np.ndarray,
-    max_vel: float,
-    slow_down: float,
-    min_duration: float = 1.0,
-) -> float:
-    """Estimate trajectory duration from max joint displacement."""
-    max_disp = float(np.max(np.abs(q_end - q_start)))
-    effective_vel = max_vel / max(slow_down, 0.1)
-    if max_disp < 1e-6:
-        return min_duration
-    return max(max_disp / effective_vel, min_duration)
+def scale_duration(base_duration: float, slow_down: float) -> float:
+    """Apply slow_down factor to a base duration."""
+    return base_duration * max(slow_down, 0.1)
 
 
 def concatenate_segments(
@@ -173,20 +166,17 @@ def _phase_grip(q0, target_xyz, phi_tool_n, slow_down, ik_solve_fn, cfg, grip_id
     # Segment 1: open gripper in place
     q_open = q0.copy()
     q_open[grip_idx] = cfg.gripper_open_angle
-    dur_open = estimate_duration(q0, q_open, cfg.max_joint_velocity, slow_down, 0.5)
-    seg_open = cosine_interpolate(q0, q_open, dur_open, cfg.dt)
+    seg_open = cosine_interpolate(q0, q_open, scale_duration(cfg.duration_gripper_open, slow_down), cfg.dt)
 
     # Segment 2: descend to target (gripper stays open)
     q_at_target = q_target.copy()
     q_at_target[grip_idx] = cfg.gripper_open_angle
-    dur_descend = estimate_duration(q_open, q_at_target, cfg.max_joint_velocity, slow_down)
-    seg_descend = cosine_interpolate(q_open, q_at_target, dur_descend, cfg.dt)
+    seg_descend = cosine_interpolate(q_open, q_at_target, scale_duration(cfg.duration_descend, slow_down), cfg.dt)
 
     # Segment 3: close gripper at target
     q_closed = q_target.copy()
     q_closed[grip_idx] = cfg.gripper_close_angle
-    dur_close = estimate_duration(q_at_target, q_closed, cfg.max_joint_velocity, slow_down, 0.5)
-    seg_close = cosine_interpolate(q_at_target, q_closed, dur_close, cfg.dt)
+    seg_close = cosine_interpolate(q_at_target, q_closed, scale_duration(cfg.duration_gripper_close, slow_down), cfg.dt)
 
     # Segment 4: lift up with closed gripper
     lift_xyz = target_xyz.copy()
@@ -194,8 +184,7 @@ def _phase_grip(q0, target_xyz, phi_tool_n, slow_down, ik_solve_fn, cfg, grip_id
     q_lifted = ik_solve_fn(lift_xyz, phi_tool_n, q_closed)
     if q_lifted is not None:
         q_lifted[grip_idx] = cfg.gripper_close_angle
-        dur_lift = estimate_duration(q_closed, q_lifted, cfg.max_joint_velocity, slow_down)
-        seg_lift = cosine_interpolate(q_closed, q_lifted, dur_lift, cfg.dt)
+        seg_lift = cosine_interpolate(q_closed, q_lifted, scale_duration(cfg.duration_lift, slow_down), cfg.dt)
         pos, vel, acc, times = concatenate_segments([seg_open, seg_descend, seg_close, seg_lift])
     else:
         # Lift IK failed — return grip without lift
@@ -221,11 +210,10 @@ def _phase_lift(q0, current_xyz, phi_tool_n, slow_down, ik_solve_fn, fk_fn, cfg,
             success=False, q_traj=np.empty((0, n)), qd_traj=np.empty((0, n)),
             qdd_traj=np.empty((0, n)), times=np.empty(0), message="IK failed for lift target",
         )
-    # Keep jaw at current angle
+    # Keep gripper at current angle
     q_lifted[grip_idx] = q0[grip_idx]
 
-    dur = estimate_duration(q0, q_lifted, cfg.max_joint_velocity, slow_down)
-    pos, vel, acc, times = cosine_interpolate(q0, q_lifted, dur, cfg.dt)
+    pos, vel, acc, times = cosine_interpolate(q0, q_lifted, scale_duration(cfg.duration_lift, slow_down), cfg.dt)
     return GripTrajectoryResult(success=True, q_traj=pos, qd_traj=vel, qdd_traj=acc, times=times)
 
 
@@ -241,29 +229,25 @@ def _phase_laydown(q0, target_xyz, phi_tool_n, slow_down, ik_solve_fn, cfg, grip
             qdd_traj=np.empty((0, n)), times=np.empty(0), message="IK failed for laydown target",
         )
     q_target[grip_idx] = q0[grip_idx]  # keep gripper closed during descent
-    dur_desc = estimate_duration(q0, q_target, cfg.max_joint_velocity, slow_down)
-    seg_desc = cosine_interpolate(q0, q_target, dur_desc, cfg.dt)
+    seg_desc = cosine_interpolate(q0, q_target, scale_duration(cfg.duration_descend, slow_down), cfg.dt)
 
     # Segment 2: open gripper
     q_open = q_target.copy()
     q_open[grip_idx] = cfg.gripper_open_angle
-    dur_open = estimate_duration(q_target, q_open, cfg.max_joint_velocity, slow_down, 0.5)
-    seg_open = cosine_interpolate(q_target, q_open, dur_open, cfg.dt)
+    seg_open = cosine_interpolate(q_target, q_open, scale_duration(cfg.duration_gripper_open, slow_down), cfg.dt)
 
     # Segment 3: lift
     lift_xyz = target_xyz.copy()
     lift_xyz[2] += cfg.lift_height
     q_lifted = ik_solve_fn(lift_xyz, phi_tool_n, q_open)
     if q_lifted is None:
-        # Still return what we have
         pos, vel, acc, times = concatenate_segments([seg_desc, seg_open])
         return GripTrajectoryResult(
             success=True, q_traj=pos, qd_traj=vel, qdd_traj=acc, times=times,
             message="Lift IK failed, returning descent+open only",
         )
     q_lifted[grip_idx] = cfg.gripper_open_angle
-    dur_lift = estimate_duration(q_open, q_lifted, cfg.max_joint_velocity, slow_down)
-    seg_lift = cosine_interpolate(q_open, q_lifted, dur_lift, cfg.dt)
+    seg_lift = cosine_interpolate(q_open, q_lifted, scale_duration(cfg.duration_lift, slow_down), cfg.dt)
 
     pos, vel, acc, times = concatenate_segments([seg_desc, seg_open, seg_lift])
     return GripTrajectoryResult(success=True, q_traj=pos, qd_traj=vel, qdd_traj=acc, times=times)
@@ -276,22 +260,20 @@ def _phase_open_and_lift(q0, current_xyz, phi_tool_n, slow_down, ik_solve_fn, fk
     # Segment 1: open gripper
     q_open = q0.copy()
     q_open[grip_idx] = cfg.gripper_open_angle
-    dur_open = estimate_duration(q0, q_open, cfg.max_joint_velocity, slow_down, 0.5)
-    seg_open = cosine_interpolate(q0, q_open, dur_open, cfg.dt)
+    seg_open = cosine_interpolate(q0, q_open, scale_duration(cfg.duration_gripper_open, slow_down), cfg.dt)
 
     # Segment 2: lift
     lift_xyz = current_xyz.copy()
     lift_xyz[2] += cfg.lift_height
     q_lifted = ik_solve_fn(lift_xyz, phi_tool_n, q_open)
     if q_lifted is None:
-        pos, vel, acc, times = cosine_interpolate(q0, q_open, dur_open, cfg.dt)
+        pos, vel, acc, times = seg_open
         return GripTrajectoryResult(
             success=True, q_traj=pos, qd_traj=vel, qdd_traj=acc, times=times,
             message="Lift IK failed, returning gripper-open only",
         )
     q_lifted[grip_idx] = cfg.gripper_open_angle
-    dur_lift = estimate_duration(q_open, q_lifted, cfg.max_joint_velocity, slow_down)
-    seg_lift = cosine_interpolate(q_open, q_lifted, dur_lift, cfg.dt)
+    seg_lift = cosine_interpolate(q_open, q_lifted, scale_duration(cfg.duration_lift, slow_down), cfg.dt)
 
     pos, vel, acc, times = concatenate_segments([seg_open, seg_lift])
     return GripTrajectoryResult(success=True, q_traj=pos, qd_traj=vel, qdd_traj=acc, times=times)

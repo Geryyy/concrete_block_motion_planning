@@ -89,9 +89,13 @@ class GripTrajServerSimple(Node):
         self.declare_parameter("lift_height", 0.5)
         self.declare_parameter("gripper_open_angle", 0.15)
         self.declare_parameter("gripper_close_angle", 0.0)
-        self.declare_parameter("max_joint_velocity", 0.3)
         self.declare_parameter("default_block_radius", 0.30)
         self.declare_parameter("default_block_length", 0.90)
+        # Per-segment durations (seconds) — tune these for commissioning
+        self.declare_parameter("duration_gripper_open", 2.0)
+        self.declare_parameter("duration_descend", 5.0)
+        self.declare_parameter("duration_gripper_close", 2.0)
+        self.declare_parameter("duration_lift", 5.0)
 
         self._joint_names = (
             self.get_parameter("controlled_joint_names").value
@@ -101,9 +105,12 @@ class GripTrajServerSimple(Node):
             lift_height=self.get_parameter("lift_height").value,
             gripper_open_angle=self.get_parameter("gripper_open_angle").value,
             gripper_close_angle=self.get_parameter("gripper_close_angle").value,
-            max_joint_velocity=self.get_parameter("max_joint_velocity").value,
             default_block_radius=self.get_parameter("default_block_radius").value,
             default_block_length=self.get_parameter("default_block_length").value,
+            duration_gripper_open=self.get_parameter("duration_gripper_open").value,
+            duration_descend=self.get_parameter("duration_descend").value,
+            duration_gripper_close=self.get_parameter("duration_gripper_close").value,
+            duration_lift=self.get_parameter("duration_lift").value,
         )
         self._gripper_index = len(self._joint_names) - 1  # last joint is gripper
 

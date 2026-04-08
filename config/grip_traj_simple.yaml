@@ -1,0 +1,20 @@
+grip_traj_server:
+  ros__parameters:
+    service_name: "grip_traj_movement"
+    joint_states_topic: "/joint_states"
+    controlled_joint_names:
+      - "theta1_slewing_joint"
+      - "theta2_boom_joint"
+      - "theta3_arm_joint"
+      - "q4_big_telescope"
+      - "theta6_tip_joint"
+      - "theta7_tilt_joint"
+      - "theta8_rotator_joint"
+      - "q9_left_rail_joint"
+    dt_target: 0.01
+    lift_height: 0.5
+    jaw_open_angle: 0.15
+    jaw_grip_angle: 0.0
+    max_joint_velocity: 0.12
+    default_block_radius: 0.30
+    default_block_length: 0.90

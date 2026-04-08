@@ -1,7 +1,0 @@
-string configuration_name
-float32 timeout_s
-bool dry_run
----
-bool success
-string trajectory_id
-string message

@@ -8,56 +8,23 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(nav_msgs REQUIRED)
-find_package(std_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
-find_package(trajectory_msgs REQUIRED)
-find_package(concrete_block_perception REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "srv/PlanGeometricPath.srv"
-  "srv/ComputeTrajectory.srv"
-  "srv/ExecuteTrajectory.srv"
-  "srv/ExecuteNamedConfiguration.srv"
   "srv/GetNextAssemblyTask.srv"
-  "srv/PlanAndComputeTrajectory.srv"
-  DEPENDENCIES geometry_msgs nav_msgs std_msgs builtin_interfaces trajectory_msgs
+  DEPENDENCIES geometry_msgs builtin_interfaces
 )
 
 install(PROGRAMS
-  scripts/motion_planning_node.py
-  scripts/acados_benchmark.py
-  scripts/bare_metal_single_block_client.py
-  scripts/headless_trajectory_smoke.py
-  scripts/joint_goal_feasibility_probe.py
-  scripts/rviz_move_empty_interface.py
-  scripts/joint_state_timber_compat.py
-  scripts/dummy_joint_state_publisher.py
-  scripts/timber_follow_joint_trajectory_proxy.py
-  scripts/gripper_state_bridge.py
   scripts/wall_plan_server.py
-  motion_planning_tools/standalone/run_planner_experiment.py
+  scripts/grip_traj_server_simple.py
+  scripts/grip_trajectory.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
 install(DIRECTORY
-  scripts/cbmp
-  DESTINATION lib/${PROJECT_NAME}
-)
-
-install(DIRECTORY
-  launch
   config
   motion_planning
-  motion_planning_tools
-  DESTINATION share/${PROJECT_NAME}
-)
-
-install(FILES
-  VENDOR_README.md
-  pyproject.toml
-  requirements-core.txt
-  requirements-benchmark.txt
   DESTINATION share/${PROJECT_NAME}
 )
 

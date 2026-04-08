@@ -1,2 +1,0 @@
-"""Trajectory optimization test package."""
-

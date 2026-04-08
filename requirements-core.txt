@@ -1,8 +1,0 @@
-# Core python dependencies used by the runtime and local tooling.
-numpy
-scipy
-python-fcl
-matplotlib
-casadi
-cython
-Deprecated

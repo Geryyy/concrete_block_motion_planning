@@ -65,7 +65,7 @@ CONTROLLED_JOINT_NAMES = [
     "q9_left_rail_joint",
 ]
 
-# IK uses 7 dynamic joints (no jaw); these are the actuated subset for IK
+# IK uses 7 dynamic joints (no gripper); these are the actuated subset for IK
 IK_ACTUATED = [
     "theta1_slewing_joint",
     "theta2_boom_joint",
@@ -87,8 +87,8 @@ class GripTrajServerSimple(Node):
         )
         self.declare_parameter("dt_target", 0.01)
         self.declare_parameter("lift_height", 0.5)
-        self.declare_parameter("jaw_open_angle", 0.15)
-        self.declare_parameter("jaw_grip_angle", 0.0)
+        self.declare_parameter("gripper_open_angle", 0.15)
+        self.declare_parameter("gripper_close_angle", 0.0)
         self.declare_parameter("max_joint_velocity", 0.3)
         self.declare_parameter("default_block_radius", 0.30)
         self.declare_parameter("default_block_length", 0.90)
@@ -99,13 +99,13 @@ class GripTrajServerSimple(Node):
         self._cfg = GripTrajectoryConfig(
             dt=self.get_parameter("dt_target").value,
             lift_height=self.get_parameter("lift_height").value,
-            jaw_open_angle=self.get_parameter("jaw_open_angle").value,
-            jaw_grip_angle=self.get_parameter("jaw_grip_angle").value,
+            gripper_open_angle=self.get_parameter("gripper_open_angle").value,
+            gripper_close_angle=self.get_parameter("gripper_close_angle").value,
             max_joint_velocity=self.get_parameter("max_joint_velocity").value,
             default_block_radius=self.get_parameter("default_block_radius").value,
             default_block_length=self.get_parameter("default_block_length").value,
         )
-        self._jaw_index = len(self._joint_names) - 1  # last joint is jaw
+        self._gripper_index = len(self._joint_names) - 1  # last joint is gripper
 
         # Joint state subscription
         self._latest_positions: dict[str, float] = {}
@@ -153,13 +153,13 @@ class GripTrajServerSimple(Node):
     def _ik_solve(
         self, target_xyz: np.ndarray, phi_tool_n: float, seed_q: np.ndarray
     ) -> np.ndarray | None:
-        """Solve IK and return full joint vector (including jaw from seed)."""
+        """Solve IK and return full joint vector (including gripper from seed)."""
         T = pose_from_pos_yaw(target_xyz, phi_tool_n)
 
-        # Build seed dict from joint names (excluding jaw)
+        # Build seed dict from joint names (excluding gripper)
         seed = {}
         for i, name in enumerate(self._joint_names):
-            if i != self._jaw_index:
+            if i != self._gripper_index:
                 seed[name] = float(seed_q[i])
 
         # Fixed joints (passive)
@@ -196,7 +196,7 @@ class GripTrajServerSimple(Node):
 
         q_map = {}
         for i, name in enumerate(self._joint_names):
-            if i != self._jaw_index:
+            if i != self._gripper_index:
                 q_map[name] = float(q[i])
         # Add tied joints
         if "q5_small_telescope" not in q_map and "q4_big_telescope" in q_map:
@@ -248,7 +248,7 @@ class GripTrajServerSimple(Node):
             ik_solve_fn=self._ik_solve,
             fk_fn=self._fk,
             cfg=self._cfg,
-            jaw_index=self._jaw_index,
+            gripper_index=self._gripper_index,
         )
 
         if not result.success:

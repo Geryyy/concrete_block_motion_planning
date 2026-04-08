@@ -13,8 +13,8 @@ grip_traj_server:
       - "q9_left_rail_joint"
     dt_target: 0.01
     lift_height: 0.5
-    jaw_open_angle: 0.15
-    jaw_grip_angle: 0.0
+    gripper_open_angle: 0.15
+    gripper_close_angle: 0.0
     max_joint_velocity: 0.12
     default_block_radius: 0.30
     default_block_length: 0.90

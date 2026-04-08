@@ -91,6 +91,10 @@ class GripTrajServerSimple(Node):
         self.declare_parameter("gripper_close_angle", 0.0)
         self.declare_parameter("default_block_radius", 0.30)
         self.declare_parameter("default_block_length", 0.90)
+        # Offset from K8_tool_center_point to actual grip point (PZS100 rail length)
+        # IK targets K8, so we shift the target up by this amount so the grip
+        # point (virtual TCP) reaches the desired position.
+        self.declare_parameter("tcp_z_offset", 0.7)
         # Per-segment durations (seconds) — tune these for commissioning
         self.declare_parameter("duration_gripper_open", 2.0)
         self.declare_parameter("duration_descend", 5.0)
@@ -113,6 +117,7 @@ class GripTrajServerSimple(Node):
             duration_lift=self.get_parameter("duration_lift").value,
         )
         self._gripper_index = len(self._joint_names) - 1  # last joint is gripper
+        self._tcp_z_offset = self.get_parameter("tcp_z_offset").value
 
         # Joint state subscription
         self._latest_positions: dict[str, float] = {}
@@ -231,8 +236,10 @@ class GripTrajServerSimple(Node):
             response.success = 0
             return response
 
+        # Target is where the virtual TCP (grip point) should go.
+        # IK solves for K8, so shift target up by tcp_z_offset.
         target_xyz = np.array(
-            [request.y_n.x, request.y_n.y, request.y_n.z]
+            [request.y_n.x, request.y_n.y, request.y_n.z + self._tcp_z_offset]
         )
         phi_tool_n = request.phi_tool_n
         select_phases = request.select_phases
@@ -241,8 +248,9 @@ class GripTrajServerSimple(Node):
         current_xyz = self._fk(q0)
         self.get_logger().info(
             f"Grip request | phase={select_phases} "
-            f"current=({current_xyz[0]:.2f}, {current_xyz[1]:.2f}, {current_xyz[2]:.2f}) "
-            f"target=({target_xyz[0]:.2f}, {target_xyz[1]:.2f}, {target_xyz[2]:.2f}) "
+            f"current_K8=({current_xyz[0]:.2f}, {current_xyz[1]:.2f}, {current_xyz[2]:.2f}) "
+            f"target_K8=({target_xyz[0]:.2f}, {target_xyz[1]:.2f}, {target_xyz[2]:.2f}) "
+            f"tcp_offset={self._tcp_z_offset:.2f}m "
             f"phi={math.degrees(phi_tool_n):.1f}deg slow_down={slow_down:.1f}"
         )
 

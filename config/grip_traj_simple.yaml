@@ -12,6 +12,7 @@ grip_traj_server:
       - "theta8_rotator_joint"
       - "q9_left_rail_joint"
     dt_target: 0.01
+    tcp_z_offset: 0.7  # K8 → virtual TCP offset (PZS100 rail length)
     lift_height: 0.5
     gripper_open_angle: 0.15
     gripper_close_angle: 0.0

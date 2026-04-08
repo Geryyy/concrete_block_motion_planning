@@ -27,6 +27,13 @@ class WallPlanServer(Node):
     def __init__(self):
         super().__init__("concrete_block_motion_planning_node")
 
+        # Z offset from block center to crane tip grip target.
+        # The grip planner expects the crane tip position, not the block CoG.
+        # For a 0.6m tall block: tip is ~0.5m above block center.
+        self.declare_parameter("grip_z_offset", 0.5)
+        self._grip_z_offset = self.get_parameter("grip_z_offset").value
+        self.get_logger().info(f"Grip Z offset: {self._grip_z_offset}m")
+
         # Load wall plans
         pkg_share = get_package_share_directory("concrete_block_motion_planning")
         wall_plan_path = f"{pkg_share}/motion_planning/data/wall_plans.yaml"
@@ -136,8 +143,10 @@ class WallPlanServer(Node):
         response.task_id = task_id
         response.target_block_id = block_id
         response.reference_block_id = ""
-        response.pickup_pose = self._make_pose(x, y, z, yaw)
-        response.target_pose = self._make_pose(x, y, z, yaw)
+        # pickup_pose: crane tip target = block CoG + grip_z_offset
+        grip_z = z + self._grip_z_offset
+        response.pickup_pose = self._make_pose(x, y, grip_z, yaw)
+        response.target_pose = self._make_pose(x, y, grip_z, yaw)
         response.reference_pose = PoseStamped()
         response.message = f"Task {idx + 1}/{len(tasks)}: {block_id}"
 

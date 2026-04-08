@@ -2,6 +2,15 @@ defaults:
   block_size: [0.6, 0.9, 0.6]
 
 wall_plans:
+  pzs100_pick_place:
+    sequence:
+      - id: "block_1"
+        absolute_position: [5.0, 2.0, -0.84]
+        yaw_deg: 0.0
+      - id: "block_2"
+        absolute_position: [5.0, -2.0, -0.84]
+        yaw_deg: 0.0
+
   basic_interlocking_3_2:
     sequence:
       - id: "B0"

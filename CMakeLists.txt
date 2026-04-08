@@ -35,6 +35,7 @@ install(PROGRAMS
   scripts/dummy_joint_state_publisher.py
   scripts/timber_follow_joint_trajectory_proxy.py
   scripts/gripper_state_bridge.py
+  scripts/wall_plan_server.py
   motion_planning_tools/standalone/run_planner_experiment.py
   DESTINATION lib/${PROJECT_NAME}
 )

@@ -13,9 +13,10 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import Path as NavPath
 from sensor_msgs.msg import JointState
+from tf2_ros import StaticTransformBroadcaster
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from timber_crane_planning_interfaces.srv import CalcGripMovement
 
@@ -87,37 +88,39 @@ class GripTrajServerSimple(Node):
         )
         self.declare_parameter("dt_target", 0.01)
         self.declare_parameter("lift_height", 0.5)
-        self.declare_parameter("gripper_open_angle", 0.15)
-        self.declare_parameter("gripper_close_angle", 0.0)
-        self.declare_parameter("default_block_radius", 0.30)
-        self.declare_parameter("default_block_length", 0.90)
-        # Offset from K8_tool_center_point to actual grip point (PZS100 rail length)
+        self.declare_parameter("gripper_open_position", 0.15)
+        self.declare_parameter("gripper_close_position", 0.0)
+        # Scale factor for gripper command: 0.5 in sim (mimic doubles it), 1.0 on real HW
+        self.declare_parameter("gripper_command_scale", 0.5)
+        # Offset from K8_tool_center_point to actual grip point (PZS100 rail length).
         # IK targets K8, so we shift the target up by this amount so the grip
         # point (virtual TCP) reaches the desired position.
         self.declare_parameter("tcp_z_offset", 0.7)
+        # Offset from block CoG to the grip point on top of the block.
+        # For a ~0.6m tall block this is ~0.3m (half the block height).
+        # Combined with tcp_z_offset this gives the full CoG→K8 offset.
+        self.declare_parameter("block_grip_z_offset", -0.3)
         # Per-segment durations (seconds) — tune these for commissioning
-        self.declare_parameter("duration_gripper_open", 2.0)
+        self.declare_parameter("duration_gripper", 2.0)
         self.declare_parameter("duration_descend", 5.0)
-        self.declare_parameter("duration_gripper_close", 2.0)
         self.declare_parameter("duration_lift", 5.0)
 
         self._joint_names = (
             self.get_parameter("controlled_joint_names").value
         )
+        grip_scale = self.get_parameter("gripper_command_scale").value
         self._cfg = GripTrajectoryConfig(
             dt=self.get_parameter("dt_target").value,
             lift_height=self.get_parameter("lift_height").value,
-            gripper_open_angle=self.get_parameter("gripper_open_angle").value,
-            gripper_close_angle=self.get_parameter("gripper_close_angle").value,
-            default_block_radius=self.get_parameter("default_block_radius").value,
-            default_block_length=self.get_parameter("default_block_length").value,
-            duration_gripper_open=self.get_parameter("duration_gripper_open").value,
+            gripper_open_position=self.get_parameter("gripper_open_position").value * grip_scale,
+            gripper_close_position=self.get_parameter("gripper_close_position").value * grip_scale,
+            duration_gripper=self.get_parameter("duration_gripper").value,
             duration_descend=self.get_parameter("duration_descend").value,
-            duration_gripper_close=self.get_parameter("duration_gripper_close").value,
             duration_lift=self.get_parameter("duration_lift").value,
         )
         self._gripper_index = len(self._joint_names) - 1  # last joint is gripper
         self._tcp_z_offset = self.get_parameter("tcp_z_offset").value
+        self._block_grip_z_offset = self.get_parameter("block_grip_z_offset").value
 
         # Joint state subscription
         self._latest_positions: dict[str, float] = {}
@@ -134,6 +137,19 @@ class GripTrajServerSimple(Node):
 
         # Path visualization publisher (same topics as timber grip_traj_server)
         self._path_pub = self.create_publisher(NavPath, "tcp_path", 10)
+
+        # Publish virtual_tcp TF derived from tcp_z_offset (single source of truth)
+        self._tf_broadcaster = StaticTransformBroadcaster(self)
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = "K8_tool_center_point"
+        t.child_frame_id = "virtual_tcp"
+        t.transform.translation.z = self._tcp_z_offset
+        t.transform.rotation.w = 1.0
+        self._tf_broadcaster.sendTransform(t)
+        self.get_logger().info(
+            f"Published virtual_tcp TF: z={self._tcp_z_offset:.3f}m from K8"
+        )
 
         # Service
         svc_name = self.get_parameter("service_name").value
@@ -202,8 +218,8 @@ class GripTrajServerSimple(Node):
                 q_out[idx] = val
         return q_out
 
-    def _fk(self, q: np.ndarray) -> np.ndarray:
-        """Forward kinematics: joint vector → TCP xyz."""
+    def _fk_transform(self, q: np.ndarray) -> np.ndarray:
+        """Forward kinematics: joint vector → K8 4x4 homogeneous transform in K0."""
         import pinocchio as pin
 
         q_map = {}
@@ -218,7 +234,7 @@ class GripTrajServerSimple(Node):
             if jn not in q_map:
                 q_map[jn] = 0.0
 
-        T = fk_homogeneous(
+        return fk_homogeneous(
             pin_model=self._desc.model,
             pin_data=self._desc.data,
             pin_module=pin,
@@ -227,7 +243,16 @@ class GripTrajServerSimple(Node):
             end_frame="K8_tool_center_point",
             frame_cache=self._frame_cache,
         )
-        return T[:3, 3].copy()
+
+    def _fk(self, q: np.ndarray) -> np.ndarray:
+        """Forward kinematics: joint vector → K8 xyz in K0."""
+        return self._fk_transform(q)[:3, 3].copy()
+
+    def _fk_virtual_tcp(self, q: np.ndarray) -> np.ndarray:
+        """Forward kinematics: joint vector → virtual TCP xyz in K0."""
+        T = self._fk_transform(q)
+        # Offset along K8's local z-axis
+        return (T[:3, 3] + self._tcp_z_offset * T[:3, 2]).copy()
 
     def _handle_request(self, request, response):
         q0 = self._get_q0()
@@ -236,21 +261,23 @@ class GripTrajServerSimple(Node):
             response.success = 0
             return response
 
-        # Target is where the virtual TCP (grip point) should go.
-        # IK solves for K8, so shift target up by tcp_z_offset.
+        # Input is block CoG. Shift up by:
+        #   block_grip_z_offset  (CoG → grip point on block top)
+        #   tcp_z_offset         (grip point → K8_tool_center_point)
+        total_z_offset = self._block_grip_z_offset + self._tcp_z_offset
         target_xyz = np.array(
-            [request.y_n.x, request.y_n.y, request.y_n.z + self._tcp_z_offset]
+            [request.y_n.x, request.y_n.y, request.y_n.z + total_z_offset]
         )
         phi_tool_n = request.phi_tool_n
-        select_phases = request.select_phases
+        phase = request.select_phases
         slow_down = max(request.slow_down, 0.1)
 
         current_xyz = self._fk(q0)
         self.get_logger().info(
-            f"Grip request | phase={select_phases} "
+            f"Grip request | phase={phase} "
             f"current_K8=({current_xyz[0]:.2f}, {current_xyz[1]:.2f}, {current_xyz[2]:.2f}) "
             f"target_K8=({target_xyz[0]:.2f}, {target_xyz[1]:.2f}, {target_xyz[2]:.2f}) "
-            f"tcp_offset={self._tcp_z_offset:.2f}m "
+            f"z_offsets=block_grip:{self._block_grip_z_offset:.2f}+tcp:{self._tcp_z_offset:.2f}={total_z_offset:.2f}m "
             f"phi={math.degrees(phi_tool_n):.1f}deg slow_down={slow_down:.1f}"
         )
 
@@ -258,7 +285,7 @@ class GripTrajServerSimple(Node):
             q0=q0,
             target_xyz=target_xyz,
             phi_tool_n=phi_tool_n,
-            select_phases=select_phases,
+            phase=phase,
             slow_down=slow_down,
             ik_solve_fn=self._ik_solve,
             fk_fn=self._fk,
@@ -313,7 +340,7 @@ class GripTrajServerSimple(Node):
         # Sample every 10th point to keep it lightweight
         step = max(1, len(q_traj) // 50)
         for i in range(0, len(q_traj), step):
-            xyz = self._fk(q_traj[i])
+            xyz = self._fk_virtual_tcp(q_traj[i])
             pose = PoseStamped()
             pose.header = path_msg.header
             pose.pose.position.x = float(xyz[0])

@@ -820,7 +820,7 @@
   </link>
   <joint name="q9_left_rail_joint" type="prismatic">
     <origin rpy="0 0 0" xyz="0 0 0"/>
-    <limit effort="3.9e5" lower="0" upper="0.538" velocity="0.0995"/>
+    <limit effort="3.9e5" lower="0" upper="0.7" velocity="0.0995"/>
     <parent link="before_q9"/>
     <child link="K9"/>
     <axis xyz="0 0 1"/>
@@ -832,7 +832,7 @@
     <child link="K11"/>
     <axis xyz="0 0 1"/>
     <origin rpy="0 0 0" xyz="0 0 0 "/>
-    <limit effort="3.9e5" lower="0" upper="0.538" velocity="0.0995"/>
+    <limit effort="3.9e5" lower="0" upper="0.7" velocity="0.0995"/>
   </joint>
   <!-- sensors -->
   <!-- IMU15 xsens -->

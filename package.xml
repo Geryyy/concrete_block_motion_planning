@@ -17,6 +17,7 @@
   <depend>trajectory_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>timber_crane_planning_interfaces</depend>
+  <exec_depend>concrete_block_perception</exec_depend>
 
   <exec_depend>rosidl_default_runtime</exec_depend>
 

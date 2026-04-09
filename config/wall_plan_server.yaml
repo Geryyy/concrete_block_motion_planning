@@ -1,0 +1,10 @@
+concrete_block_motion_planning_node:
+  ros__parameters:
+    # Lateral offset for angled placement approach (meters).
+    # Shifted along block yaw direction so the descend slides in
+    # at an angle rather than dropping straight down.
+    # Set to 0.0 for pure vertical placement.
+    place_approach_offset: 0.3
+    # World model integration
+    world_model_service: "/block_world_model_node/get_coarse_blocks"
+    world_model_timeout_s: 2.0

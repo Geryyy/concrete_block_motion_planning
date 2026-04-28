@@ -364,6 +364,43 @@ def link_to_body(link: LinkInertial, H_root_to_link: np.ndarray) -> Body:
     )
 
 
+def link_to_body_from_mesh_aabb(
+    name: str,
+    mass: float,
+    mesh_in_link: "trimesh.Trimesh",
+    H_root_to_link: np.ndarray,
+) -> Body:
+    """Build a Body from the mesh AABB + URDF mass (uniform-density solid box).
+
+    The box is axis-aligned in the link frame and sized to enclose the mesh;
+    CoM sits at the AABB center; inertia follows the solid-box formula for a
+    body of the URDF-declared mass.
+    """
+    aabb_min, aabb_max = mesh_in_link.bounds  # (2, 3) in link frame
+    half_ext = (aabb_max - aabb_min) / 2.0
+    center_link = (aabb_min + aabb_max) / 2.0
+
+    com_root = (H_root_to_link @ np.append(center_link, 1.0))[:3]
+
+    hx, hy, hz = half_ext
+    I_link = np.diag(
+        [
+            mass / 3.0 * (hy ** 2 + hz ** 2),
+            mass / 3.0 * (hx ** 2 + hz ** 2),
+            mass / 3.0 * (hx ** 2 + hy ** 2),
+        ]
+    )
+    R_lr = H_root_to_link[:3, :3]
+    return Body(
+        name=name,
+        mass=mass,
+        com_in_root=com_root,
+        I_com_in_root=R_lr @ I_link @ R_lr.T,
+        R_box_in_root=R_lr,
+        half_extents=half_ext,
+    )
+
+
 def composite(bodies: list[Body]) -> tuple[float, np.ndarray, np.ndarray]:
     M = sum(b.mass for b in bodies)
     com = sum(b.mass * b.com_in_root for b in bodies) / M
@@ -404,6 +441,7 @@ def plot_gripper(
     attachment_in_root: Optional[np.ndarray] = None,
     attachment_name: Optional[str] = None,
     meshes_in_root: Optional[list[tuple[str, "trimesh.Trimesh"]]] = None,
+    source_label: str = "URDF-derived",
 ):
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection="3d")
@@ -491,7 +529,7 @@ def plot_gripper(
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
     ax.set_zlabel("z [m] (down)")
-    ax.set_title(f"URDF-derived gripper inertia — frame: {root_name}")
+    ax.set_title(f"gripper inertia ({source_label}) — frame: {root_name}")
     ax.legend(loc="upper left", fontsize=8)
 
     info = (
@@ -529,6 +567,15 @@ def main():
     ap.add_argument("--root", default=DEFAULT_ROOT)
     ap.add_argument("--rails", nargs="+", default=list(DEFAULT_RAILS))
     ap.add_argument("--no-plot", action="store_true")
+    ap.add_argument(
+        "--from-mesh",
+        action="store_true",
+        help=(
+            "derive each body's bounding box, CoM and inertia from its visual "
+            "mesh (AABB + URDF mass, solid-box formula) instead of from the URDF "
+            "<inertia> block"
+        ),
+    )
     args = ap.parse_args()
 
     if args.urdf:
@@ -550,7 +597,23 @@ def main():
     # link name -> transform from root to that link (for mesh overlay + CoM compare)
     H_root_to_link: dict[str, np.ndarray] = {args.root: np.eye(4)}
 
-    bodies = [link_to_body(links[args.root], np.eye(4))]
+    def _make_body(name: str, H_rl: np.ndarray) -> Optional[Body]:
+        """Build a Body from mesh AABB (if --from-mesh) else from URDF inertia."""
+        if args.from_mesh:
+            if not HAS_TRIMESH:
+                sys.exit("--from-mesh needs `trimesh` installed")
+            if name not in visuals:
+                print(f"WARN: {name} has no visual mesh; falling back to URDF inertia")
+            else:
+                mesh_in_link = load_mesh_in_link_frame(visuals[name])
+                if mesh_in_link is not None:
+                    return link_to_body_from_mesh_aabb(
+                        name, links[name].mass, mesh_in_link, H_rl
+                    )
+                print(f"WARN: mesh for {name} failed to load; falling back to URDF inertia")
+        return link_to_body(links[name], H_rl)
+
+    bodies = [_make_body(args.root, np.eye(4))]
     for rail in args.rails:
         if rail not in links:
             print(f"WARN: {rail} not in URDF, skipping")
@@ -558,7 +621,7 @@ def main():
         path = downstream_path(joints, args.root, rail)
         H_rl = resolve_transform(path, q_values)
         H_root_to_link[rail] = H_rl
-        bodies.append(link_to_body(links[rail], H_rl))
+        bodies.append(_make_body(rail, H_rl))
 
     M, com, inertia = composite(bodies)
 
@@ -573,6 +636,8 @@ def main():
         attach_name = parent_j.parent
         com_in_attach = (H_root_to_parent @ np.append(com, 1.0))[:3]
 
+    source_desc = "mesh AABB + URDF mass" if args.from_mesh else "URDF <inertia> blocks"
+    print(f"source       : {source_desc}")
     print(f"q9           : {args.q9:.4f} m")
     print(f"total mass   : {M:.4f} kg")
     print(f"CoM ({args.root}) : [{com[0]:+.6f}, {com[1]:+.6f}, {com[2]:+.6f}]")
@@ -646,6 +711,7 @@ def main():
             attachment_in_root=attach_pos,
             attachment_name=attach_name,
             meshes_in_root=meshes_in_root if meshes_in_root else None,
+            source_label=("mesh-AABB-derived" if args.from_mesh else "URDF-derived"),
         )
 
 

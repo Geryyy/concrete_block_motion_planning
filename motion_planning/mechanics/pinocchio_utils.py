@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Mapping
 
 import numpy as np
+from scipy.optimize import fsolve
 
 
 def joint_bounds(pin_model, joint_name: str) -> tuple[float, float]:
@@ -72,6 +73,61 @@ def frame_id(pin_model, frame_name: str, cache: dict[str, int]) -> int:
         f"Frame '{frame_name}' not found. Available frame names include: "
         f"{[f.name for f in pin_model.frames[:20]]} ..."
     )
+
+
+def passive_joint_equilibrium(
+    *,
+    pin_model,
+    pin_data,
+    pin_module,
+    q_values: Mapping[str, float],
+    passive_joint_names: list[str],
+    seed: Mapping[str, float] | None = None,
+    tol: float = 1e-8,
+) -> dict[str, float]:
+    """Compute static equilibrium of passive joints given fixed joint positions.
+
+    Solves for passive joint angles where gravity torque on those DOFs is zero,
+    i.e. the configuration the passive joints settle to when the crane is held still.
+
+    Args:
+        pin_model: Pinocchio model.
+        pin_data: Pinocchio data (will be mutated).
+        pin_module: pinocchio module.
+        q_values: All joint positions (actuated + current passive). Actuated joints
+            are held fixed; passive joints are treated as the unknowns.
+        passive_joint_names: Joints to solve equilibrium for.
+        seed: Initial guess for passive joints. Falls back to q_values, then 0.
+        tol: fsolve tolerance.
+
+    Returns:
+        Dict mapping each passive joint name to its equilibrium angle (rad).
+        On solver failure returns the seed values unchanged.
+    """
+    passive_q_idx = []
+    passive_v_idx = []
+    for name in passive_joint_names:
+        jid = int(pin_model.getJointId(name))
+        j = pin_model.joints[jid]
+        passive_q_idx.append(int(j.idx_q))
+        passive_v_idx.append(int(j.idx_v))
+
+    q_pin = q_map_to_pin_q(pin_model, q_values, pin_module)
+
+    def residual(passive_vals: np.ndarray) -> np.ndarray:
+        for i, iq in enumerate(passive_q_idx):
+            q_pin[iq] = float(passive_vals[i])
+        pin_module.computeGeneralizedGravity(pin_model, pin_data, q_pin)
+        return np.array([float(pin_data.g[iv]) for iv in passive_v_idx])
+
+    x0 = np.array([
+        float((seed or {}).get(n, q_values.get(n, 0.0)))
+        for n in passive_joint_names
+    ])
+    sol, _, ier, _ = fsolve(residual, x0, full_output=True, xtol=tol)
+    if ier != 1:
+        return {n: float(x0[i]) for i, n in enumerate(passive_joint_names)}
+    return {n: float(sol[i]) for i, n in enumerate(passive_joint_names)}
 
 
 def fk_homogeneous(

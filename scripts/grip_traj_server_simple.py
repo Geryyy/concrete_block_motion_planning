@@ -51,7 +51,7 @@ from motion_planning.mechanics import (  # noqa: E402
 )
 from motion_planning.mechanics.crane_geometry import DEFAULT_CRANE_GEOMETRY  # noqa: E402
 from motion_planning.mechanics.inverse_kinematics import AnalyticIKSolver  # noqa: E402
-from motion_planning.mechanics.pinocchio_utils import fk_homogeneous, frame_id  # noqa: E402
+from motion_planning.mechanics.pinocchio_utils import fk_homogeneous, frame_id, passive_joint_equilibrium  # noqa: E402
 from motion_planning.mechanics.pose_conventions import pose_from_pos_yaw  # noqa: E402
 
 
@@ -134,6 +134,8 @@ class GripTrajServerSimple(Node):
         self._ik_solver = AnalyticIKSolver(self._desc, config, DEFAULT_CRANE_GEOMETRY)
         self._config = config
         self._frame_cache: dict[str, int] = {}
+        # Separate data object for equilibrium computation to avoid FK side-effects
+        self._eq_pin_data = self._desc.model.createData()
 
         # Path visualization publisher (same topics as timber grip_traj_server)
         self._path_pub = self.create_publisher(NavPath, "tcp_path", 10)
@@ -190,11 +192,27 @@ class GripTrajServerSimple(Node):
             if i != self._gripper_index:
                 seed[name] = float(seed_q[i])
 
-        # Fixed joints (passive)
-        fixed = {
-            "theta6_tip_joint": float(seed_q[4]),
-            "theta7_tilt_joint": float(seed_q[5]),
-        }
+        # Compute gravity equilibrium of passive joints given current actuated positions.
+        # Using instantaneous sensor values risks IK failure when passive joints are
+        # mid-swing after a lift/transport move.
+        import pinocchio as pin
+        eq = passive_joint_equilibrium(
+            pin_model=self._desc.model,
+            pin_data=self._eq_pin_data,
+            pin_module=pin,
+            q_values=seed,
+            passive_joint_names=self._config.passive_joints,
+            seed={n: seed[n] for n in self._config.passive_joints if n in seed},
+        )
+        for name in self._config.passive_joints:
+            swing = abs(seed.get(name, 0.0) - eq.get(name, 0.0))
+            if swing > 0.05:
+                self.get_logger().warn(
+                    f"Passive joint '{name}' is {math.degrees(swing):.1f} deg from equilibrium "
+                    f"(current={math.degrees(seed.get(name, 0.0)):.1f} eq={math.degrees(eq.get(name, 0.0)):.1f}) "
+                    "— crane may still be swinging"
+                )
+        fixed = eq
 
         result = self._ik_solver.solve(
             target_T_base_to_end=T,

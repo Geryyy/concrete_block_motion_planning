@@ -15,7 +15,7 @@ from rclpy.node import Node
 from ament_index_python.packages import get_package_share_directory
 
 from concrete_block_motion_planning.srv import GetNextAssemblyTask
-from concrete_block_perception.srv import GetCoarseBlocks, SetBlockTaskStatus
+from concrete_block_world_model_interfaces.srv import GetCoarseBlocks
 from geometry_msgs.msg import PoseStamped
 
 
@@ -88,11 +88,6 @@ class WallPlanServer(Node):
             GetNextAssemblyTask,
             "~/get_next_assembly_task",
             self._handle_get_next_task,
-        )
-        self.create_service(
-            SetBlockTaskStatus,
-            "~/set_block_task_status",
-            self._handle_set_status,
         )
         self.get_logger().info("Wall plan server ready")
 
@@ -244,15 +239,6 @@ class WallPlanServer(Node):
             f"yaw={math.degrees(yaw):.1f}deg"
         )
         return response
-
-    def _handle_set_status(self, request, response):
-        self.get_logger().info(
-            f"SetBlockTaskStatus | block={request.block_id} status={request.task_status}"
-        )
-        response.success = True
-        response.message = "OK"
-        return response
-
 
 def main():
     rclpy.init()

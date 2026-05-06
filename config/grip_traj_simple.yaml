@@ -22,6 +22,6 @@ grip_traj_server:
     # where q9 = total opening. Set to 1.0 on real hardware.
     gripper_command_scale: 0.5
     # Per-segment durations in seconds (tune for commissioning)
-    duration_gripper: 5.0
+    duration_gripper: 8.0
     duration_descend: 5.0
     duration_lift: 5.0

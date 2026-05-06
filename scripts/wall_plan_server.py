@@ -39,15 +39,6 @@ class WallPlanServer(Node):
         # positions. The grip trajectory server handles the full offset from
         # block center to K8_tool_center_point via its tcp_z_offset parameter.
 
-        # Lateral offset for angled placement approach (meters).
-        # The approach position is shifted along the block's yaw direction
-        # by this amount, so the descend slides in at an angle rather than
-        # dropping straight down. Helps contact with existing blocks.
-        # Positive = approach from the block's +Y (lengthwise) side.
-        # Set to 0.0 for pure vertical placement.
-        self.declare_parameter("place_approach_offset", 0.3)
-        self._place_approach_offset = self.get_parameter("place_approach_offset").value
-
         self.declare_parameter(
             "world_model_service",
             "/block_world_model_node/get_coarse_blocks",
@@ -66,8 +57,8 @@ class WallPlanServer(Node):
         self.declare_parameter("wall_plans_file", "")
         wall_plan_path = self.get_parameter("wall_plans_file").value
         if not wall_plan_path:
-            pkg_share = get_package_share_directory("concrete_block_motion_planning")
-            wall_plan_path = f"{pkg_share}/motion_planning/data/wall_plans.yaml"
+            pkg_share = get_package_share_directory("concrete_block_behavior_tree")
+            wall_plan_path = f"{pkg_share}/config/wall_plans.yaml"
         self.get_logger().info(f"Loading wall plans from {wall_plan_path}")
 
         with open(wall_plan_path) as f:
@@ -214,29 +205,21 @@ class WallPlanServer(Node):
             px, py, pz, pyaw = x, y, z, yaw
             pose_source = "yaml"
 
-        # Compute place approach position: offset along block yaw direction
-        d = self._place_approach_offset
-        ax = x + d * math.cos(yaw)
-        ay = y + d * math.sin(yaw)
-
         response.success = True
         response.has_task = True
         response.task_id = task_id
         response.target_block_id = block_id
         response.reference_block_id = ""
-        # pickup_pose from world model (or YAML fallback), target_pose always from YAML
-        # reference_pose = place approach position (laterally offset for angled descent)
         # All poses are raw block CoG — grip server handles TCP offset
         response.pickup_pose = self._make_pose(px, py, pz, pyaw)
         response.target_pose = self._make_pose(x, y, z, yaw)
-        response.reference_pose = self._make_pose(ax, ay, z, yaw)
+        response.reference_pose = self._make_pose(x, y, z, yaw)
         response.message = f"Task {idx + 1}/{len(tasks)}: {block_id}"
 
         self.get_logger().info(
             f"GetNextAssemblyTask | plan={plan_name} task={task_id} "
             f"block={block_id} pickup=({px:.2f}, {py:.2f}, {pz:.2f}) [{pose_source}] "
-            f"target=({x:.2f}, {y:.2f}, {z:.2f}) approach=({ax:.2f}, {ay:.2f}) "
-            f"yaw={math.degrees(yaw):.1f}deg"
+            f"target=({x:.2f}, {y:.2f}, {z:.2f}) yaw={math.degrees(yaw):.1f}deg"
         )
         return response
 

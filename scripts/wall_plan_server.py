@@ -8,10 +8,13 @@ falls back to YAML positions if the world model is unavailable.
 """
 
 import math
+import threading
 import yaml
 
 import rclpy
 from rclpy.node import Node
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from ament_index_python.packages import get_package_share_directory
 
 from concrete_block_motion_planning.srv import GetNextAssemblyTask
@@ -41,16 +44,19 @@ class WallPlanServer(Node):
 
         self.declare_parameter(
             "world_model_service",
-            "/block_world_model_node/get_coarse_blocks",
+            "/world_model_node/get_coarse_blocks",
         )
         self.declare_parameter("world_model_timeout_s", 2.0)
 
         self._wm_service_name = self.get_parameter("world_model_service").value
         self._wm_timeout = self.get_parameter("world_model_timeout_s").value
+        self._cb_group = ReentrantCallbackGroup()
 
         # World model client (for live block poses)
         self._wm_client = self.create_client(
-            GetCoarseBlocks, self._wm_service_name
+            GetCoarseBlocks,
+            self._wm_service_name,
+            callback_group=self._cb_group,
         )
 
         # Load wall plans
@@ -79,16 +85,26 @@ class WallPlanServer(Node):
             GetNextAssemblyTask,
             "~/get_next_assembly_task",
             self._handle_get_next_task,
+            callback_group=self._cb_group,
         )
         self.get_logger().info("Wall plan server ready")
 
     def _resolve_plan(self, plan_name, plan_data):
-        """Resolve plan sequence into list of (block_id, x, y, z, yaw_rad)."""
+        """Resolve plan sequence into task dictionaries.
+
+        Supported target definitions:
+        - absolute_position: fixed target in K0_mounting_base
+        - relative_to: target relative to a prior task in the same plan
+        - relative_to_world_model: target relative to a live world-model block
+        """
         resolved = {}
         tasks = []
         for idx, item in enumerate(plan_data.get("sequence", [])):
             block_id = item["id"]
             yaw_rad = math.radians(item.get("yaw_deg", 0.0))
+            reference_block_id = item.get("relative_to_world_model", "")
+            offset = item.get("offset", [0, 0, 0])
+            target_mode = "absolute"
 
             if "absolute_position" in item:
                 pos = item["absolute_position"]
@@ -103,6 +119,17 @@ class WallPlanServer(Node):
                 ref_pos = resolved[ref]
                 offset = item.get("offset", [0, 0, 0])
                 pos = [ref_pos[i] + offset[i] for i in range(3)]
+                reference_block_id = ref
+            elif "relative_to_world_model" in item:
+                target_mode = "relative_to_world_model"
+                pos = item.get("fallback_absolute_position")
+                if pos is None:
+                    self.get_logger().error(
+                        f"Plan '{plan_name}': block '{block_id}' uses "
+                        "'relative_to_world_model' but has no "
+                        "'fallback_absolute_position'"
+                    )
+                    continue
             else:
                 self.get_logger().error(
                     f"Plan '{plan_name}': block '{block_id}' has no position"
@@ -111,7 +138,15 @@ class WallPlanServer(Node):
 
             resolved[block_id] = pos
             task_id = f"{plan_name}_{idx + 1:02d}_{block_id}"
-            tasks.append((task_id, block_id, pos[0], pos[1], pos[2], yaw_rad))
+            tasks.append({
+                "task_id": task_id,
+                "block_id": block_id,
+                "position": pos,
+                "yaw": yaw_rad,
+                "target_mode": target_mode,
+                "reference_block_id": reference_block_id,
+                "offset": offset,
+            })
         return tasks
 
     def _query_block_pose(self, block_id: str):
@@ -127,9 +162,10 @@ class WallPlanServer(Node):
         req.force_refresh = False
         req.timeout_s = float(self._wm_timeout)
         future = self._wm_client.call_async(req)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=self._wm_timeout + 1.0)
+        done = threading.Event()
+        future.add_done_callback(lambda _: done.set())
 
-        if not future.done() or future.result() is None:
+        if not done.wait(timeout=float(self._wm_timeout) + 1.0) or future.result() is None:
             self.get_logger().warn("World model query timed out, using YAML fallback")
             return None
 
@@ -193,7 +229,12 @@ class WallPlanServer(Node):
             self.get_logger().info(response.message)
             return response
 
-        task_id, block_id, x, y, z, yaw = tasks[idx]
+        task = tasks[idx]
+        task_id = task["task_id"]
+        block_id = task["block_id"]
+        x, y, z = task["position"]
+        yaw = task["yaw"]
+        reference_block_id = task.get("reference_block_id", "")
         self._progress[plan_name] = idx + 1
 
         # Query world model for actual pickup pose; fall back to YAML
@@ -205,11 +246,26 @@ class WallPlanServer(Node):
             px, py, pz, pyaw = x, y, z, yaw
             pose_source = "yaml"
 
+        if task.get("target_mode") == "relative_to_world_model":
+            ref_pose = self._query_block_pose(reference_block_id)
+            if ref_pose is not None:
+                rx, ry, rz, ryaw = ref_pose
+                offset = task.get("offset", [0, 0, 0])
+                x = rx + offset[0]
+                y = ry + offset[1]
+                z = rz + offset[2]
+                yaw = ryaw + task["yaw"]
+                target_source = f"world_model:{reference_block_id}"
+            else:
+                target_source = "fallback_yaml"
+        else:
+            target_source = "yaml"
+
         response.success = True
         response.has_task = True
         response.task_id = task_id
         response.target_block_id = block_id
-        response.reference_block_id = ""
+        response.reference_block_id = reference_block_id
         # All poses are raw block CoG — grip server handles TCP offset
         response.pickup_pose = self._make_pose(px, py, pz, pyaw)
         response.target_pose = self._make_pose(x, y, z, yaw)
@@ -219,16 +275,22 @@ class WallPlanServer(Node):
         self.get_logger().info(
             f"GetNextAssemblyTask | plan={plan_name} task={task_id} "
             f"block={block_id} pickup=({px:.2f}, {py:.2f}, {pz:.2f}) [{pose_source}] "
-            f"target=({x:.2f}, {y:.2f}, {z:.2f}) yaw={math.degrees(yaw):.1f}deg"
+            f"target=({x:.2f}, {y:.2f}, {z:.2f}) [{target_source}] "
+            f"yaw={math.degrees(yaw):.1f}deg"
         )
         return response
 
 def main():
     rclpy.init()
     node = WallPlanServer()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
+    try:
+        executor.spin()
+    finally:
+        executor.shutdown()
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

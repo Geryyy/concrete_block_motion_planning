@@ -34,6 +34,11 @@ def quaternion_to_yaw(q) -> float:
     return math.atan2(siny_cosp, cosy_cosp)
 
 
+def normalize_angle(angle_rad: float) -> float:
+    """Normalize angle to [-pi, pi]."""
+    return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
+
+
 class WallPlanServer(Node):
     def __init__(self):
         super().__init__("concrete_block_motion_planning_node")
@@ -102,6 +107,7 @@ class WallPlanServer(Node):
         for idx, item in enumerate(plan_data.get("sequence", [])):
             block_id = item["id"]
             yaw_rad = math.radians(item.get("yaw_deg", 0.0))
+            gripper_yaw_offset = math.radians(item.get("gripper_yaw_offset_deg", 0.0))
             reference_block_id = item.get("relative_to_world_model", "")
             offset = item.get("offset", [0, 0, 0])
             target_mode = "absolute"
@@ -143,6 +149,7 @@ class WallPlanServer(Node):
                 "block_id": block_id,
                 "position": pos,
                 "yaw": yaw_rad,
+                "gripper_yaw_offset": gripper_yaw_offset,
                 "target_mode": target_mode,
                 "reference_block_id": reference_block_id,
                 "offset": offset,
@@ -233,18 +240,21 @@ class WallPlanServer(Node):
         task_id = task["task_id"]
         block_id = task["block_id"]
         x, y, z = task["position"]
-        yaw = task["yaw"]
+        block_target_yaw = task["yaw"]
+        gripper_yaw_offset = task.get("gripper_yaw_offset", 0.0)
         reference_block_id = task.get("reference_block_id", "")
         self._progress[plan_name] = idx + 1
 
         # Query world model for actual pickup pose; fall back to YAML
         wm_pose = self._query_block_pose(block_id)
         if wm_pose is not None:
-            px, py, pz, pyaw = wm_pose
+            px, py, pz, pickup_block_yaw = wm_pose
             pose_source = "world_model"
         else:
-            px, py, pz, pyaw = x, y, z, yaw
+            px, py, pz, pickup_block_yaw = x, y, z, block_target_yaw
             pose_source = "yaml"
+
+        pickup_tool_yaw = normalize_angle(pickup_block_yaw + gripper_yaw_offset)
 
         if task.get("target_mode") == "relative_to_world_model":
             ref_pose = self._query_block_pose(reference_block_id)
@@ -254,12 +264,14 @@ class WallPlanServer(Node):
                 x = rx + offset[0]
                 y = ry + offset[1]
                 z = rz + offset[2]
-                yaw = ryaw + task["yaw"]
+                block_target_yaw = normalize_angle(ryaw + task["yaw"])
                 target_source = f"world_model:{reference_block_id}"
             else:
                 target_source = "fallback_yaml"
         else:
             target_source = "yaml"
+
+        target_tool_yaw = normalize_angle(block_target_yaw + gripper_yaw_offset)
 
         response.success = True
         response.has_task = True
@@ -267,16 +279,19 @@ class WallPlanServer(Node):
         response.target_block_id = block_id
         response.reference_block_id = reference_block_id
         # All poses are raw block CoG — grip server handles TCP offset
-        response.pickup_pose = self._make_pose(px, py, pz, pyaw)
-        response.target_pose = self._make_pose(x, y, z, yaw)
-        response.reference_pose = self._make_pose(x, y, z, yaw)
+        # Pose orientation carries the desired TCP yaw for the BT motion nodes.
+        response.pickup_pose = self._make_pose(px, py, pz, pickup_tool_yaw)
+        response.target_pose = self._make_pose(x, y, z, target_tool_yaw)
+        response.reference_pose = self._make_pose(x, y, z, block_target_yaw)
         response.message = f"Task {idx + 1}/{len(tasks)}: {block_id}"
 
         self.get_logger().info(
             f"GetNextAssemblyTask | plan={plan_name} task={task_id} "
             f"block={block_id} pickup=({px:.2f}, {py:.2f}, {pz:.2f}) [{pose_source}] "
             f"target=({x:.2f}, {y:.2f}, {z:.2f}) [{target_source}] "
-            f"yaw={math.degrees(yaw):.1f}deg"
+            f"block_yaw={math.degrees(block_target_yaw):.1f}deg "
+            f"pickup_tcp_yaw={math.degrees(pickup_tool_yaw):.1f}deg "
+            f"target_tcp_yaw={math.degrees(target_tool_yaw):.1f}deg"
         )
         return response
 

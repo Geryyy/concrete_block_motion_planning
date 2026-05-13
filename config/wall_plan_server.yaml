@@ -1,4 +1,4 @@
-concrete_block_motion_planning_node:
+/**:
   ros__parameters:
     # World model integration
     world_model_service: "/world_model_node/get_coarse_blocks"

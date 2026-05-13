@@ -14,13 +14,13 @@ grip_traj_server:
     dt_target: 0.01
     tcp_z_offset: 0.95  # K8 → virtual TCP (grip point), PZS100 rail length
     block_grip_z_offset: 0.0  # Block center -> virtual TCP / grip point
+    use_passive_steady_state: true
+    passive_steady_state_iterations: 3
     lift_height: 0.5
     gripper_open_position: 1.4   # total gripper opening (m)
     gripper_close_position: 0.4  # total gripper closing (m)
-    # In sim, q9 drives one rail and the mimic plugin copies 1:1 to the other,
-    # so the actual opening is 2*q9. Scale by 0.5 to match real behavior
-    # where q9 = total opening. Set to 1.0 on real hardware.
-    gripper_command_scale: 0.5
+    # q9 is the total gripper opening. Gazebo maps this to half travel per rail.
+    gripper_command_scale: 1.0
     # Per-segment durations in seconds (tune for commissioning)
     duration_gripper: 8.0
     duration_descend: 5.0

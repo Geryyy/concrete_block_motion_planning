@@ -51,7 +51,10 @@ from motion_planning.mechanics import (  # noqa: E402
 )
 from motion_planning.mechanics.crane_geometry import DEFAULT_CRANE_GEOMETRY  # noqa: E402
 from motion_planning.mechanics.inverse_kinematics import AnalyticIKSolver  # noqa: E402
-from motion_planning.mechanics.pinocchio_utils import fk_homogeneous, frame_id, passive_joint_equilibrium  # noqa: E402
+from motion_planning.mechanics.pinocchio_utils import (  # noqa: E402
+    fk_homogeneous,
+    passive_joint_equilibrium,
+)
 from motion_planning.mechanics.pose_conventions import pose_from_pos_yaw  # noqa: E402
 
 
@@ -100,6 +103,8 @@ class GripTrajServerSimple(Node):
         # For a ~0.6m tall block this is ~0.3m (half the block height).
         # Combined with tcp_z_offset this gives the full CoG→K8 offset.
         self.declare_parameter("block_grip_z_offset", -0.3)
+        self.declare_parameter("use_passive_steady_state", False)
+        self.declare_parameter("passive_steady_state_iterations", 3)
         # Per-segment durations (seconds) — tune these for commissioning
         self.declare_parameter("duration_gripper", 2.0)
         self.declare_parameter("duration_descend", 5.0)
@@ -121,6 +126,13 @@ class GripTrajServerSimple(Node):
         self._gripper_index = len(self._joint_names) - 1  # last joint is gripper
         self._tcp_z_offset = self.get_parameter("tcp_z_offset").value
         self._block_grip_z_offset = self.get_parameter("block_grip_z_offset").value
+        self._use_passive_steady_state = bool(
+            self.get_parameter("use_passive_steady_state").value
+        )
+        self._passive_steady_state_iterations = max(
+            1,
+            int(self.get_parameter("passive_steady_state_iterations").value),
+        )
 
         # Joint state subscription
         self._latest_positions: dict[str, float] = {}
@@ -134,9 +146,10 @@ class GripTrajServerSimple(Node):
         self._ik_solver = AnalyticIKSolver(self._desc, config, DEFAULT_CRANE_GEOMETRY)
         self._config = config
         self._frame_cache: dict[str, int] = {}
-        # Separate data object for equilibrium computation to avoid FK side-effects
         self._eq_pin_data = self._desc.model.createData()
+        import pinocchio as pin
 
+        self._pin = pin
         # Path visualization publisher (same topics as timber grip_traj_server)
         self._path_pub = self.create_publisher(NavPath, "tcp_path", 10)
 
@@ -151,6 +164,14 @@ class GripTrajServerSimple(Node):
         self._tf_broadcaster.sendTransform(t)
         self.get_logger().info(
             f"Published virtual_tcp TF: z={self._tcp_z_offset:.3f}m from K8"
+        )
+        self.get_logger().info(
+            "Passive joint handling: "
+            + (
+                "static equilibrium refinement enabled"
+                if self._use_passive_steady_state
+                else "measured joint_states held fixed"
+            )
         )
 
         # Service
@@ -192,36 +213,71 @@ class GripTrajServerSimple(Node):
             if i != self._gripper_index:
                 seed[name] = float(seed_q[i])
 
-        # Compute gravity equilibrium of passive joints given current actuated positions.
-        # Using instantaneous sensor values risks IK failure when passive joints are
-        # mid-swing after a lift/transport move.
-        import pinocchio as pin
-        eq = passive_joint_equilibrium(
-            pin_model=self._desc.model,
-            pin_data=self._eq_pin_data,
-            pin_module=pin,
-            q_values=seed,
-            passive_joint_names=self._config.passive_joints,
-            seed={n: seed[n] for n in self._config.passive_joints if n in seed},
-        )
-        for name in self._config.passive_joints:
-            swing = abs(seed.get(name, 0.0) - eq.get(name, 0.0))
-            if swing > 0.05:
-                self.get_logger().warn(
-                    f"Passive joint '{name}' is {math.degrees(swing):.1f} deg from equilibrium "
-                    f"(current={math.degrees(seed.get(name, 0.0)):.1f} eq={math.degrees(eq.get(name, 0.0)):.1f}) "
-                    "— crane may still be swinging"
-                )
-        fixed = eq
+        measured_passive = {
+            name: seed[name]
+            for name in self._config.passive_joints
+            if name in seed
+        }
 
-        result = self._ik_solver.solve(
-            target_T_base_to_end=T,
-            base_frame="K0_mounting_base",
-            end_frame="K8_tool_center_point",
-            seed=seed,
-            act_names=IK_ACTUATED,
-            fixed=fixed,
+        fixed = measured_passive
+        result = None
+        solved_fixed = fixed
+        for _ in range(self._passive_steady_state_iterations):
+            result = self._ik_solver.solve(
+                target_T_base_to_end=T,
+                base_frame="K0_mounting_base",
+                end_frame="K8_tool_center_point",
+                seed=seed,
+                act_names=IK_ACTUATED,
+                fixed=fixed,
+            )
+            solved_fixed = fixed
+
+            if result is None or not result.success or not self._use_passive_steady_state:
+                break
+
+            q_values = dict(seed)
+            q_values.update(result.q_dynamic)
+            for follower, leader in self._config.tied_joints.items():
+                if leader in q_values:
+                    q_values[follower] = q_values[leader]
+            for joint_name in self._config.locked_joints:
+                q_values.setdefault(joint_name, 0.0)
+
+            next_fixed = passive_joint_equilibrium(
+                pin_model=self._desc.model,
+                pin_data=self._eq_pin_data,
+                pin_module=self._pin,
+                q_values=q_values,
+                passive_joint_names=self._config.passive_joints,
+                seed=fixed,
+            )
+            max_delta = max(
+                (
+                    abs(next_fixed.get(name, fixed.get(name, 0.0)) - fixed.get(name, 0.0))
+                    for name in self._config.passive_joints
+                ),
+                default=0.0,
+            )
+            fixed = next_fixed
+            if max_delta < 1e-4:
+                break
+
+        needs_final_refine = (
+            self._use_passive_steady_state
+            and result is not None
+            and result.success
+            and fixed != solved_fixed
         )
+        if needs_final_refine:
+            result = self._ik_solver.solve(
+                target_T_base_to_end=T,
+                base_frame="K0_mounting_base",
+                end_frame="K8_tool_center_point",
+                seed=seed,
+                act_names=IK_ACTUATED,
+                fixed=fixed,
+            )
 
         if result is None or not result.success:
             msg = "IK returned None" if result is None else result.message
@@ -231,6 +287,10 @@ class GripTrajServerSimple(Node):
         # Build output joint vector
         q_out = seed_q.copy()
         for name, val in result.q_dynamic.items():
+            if name in self._joint_names:
+                idx = self._joint_names.index(name)
+                q_out[idx] = val
+        for name, val in fixed.items():
             if name in self._joint_names:
                 idx = self._joint_names.index(name)
                 q_out[idx] = val
@@ -369,7 +429,7 @@ class GripTrajServerSimple(Node):
 
         # Always include last point
         if len(q_traj) > 0:
-            xyz = self._fk(q_traj[-1])
+            xyz = self._fk_virtual_tcp(q_traj[-1])
             pose = PoseStamped()
             pose.header = path_msg.header
             pose.pose.position.x = float(xyz[0])

@@ -18,7 +18,7 @@ grip_traj_server:
     passive_steady_state_iterations: 3
     lift_height: 0.5
     gripper_open_position: 1.4   # total gripper opening (m)
-    gripper_close_position: 0.4  # total gripper closing (m)
+    gripper_close_position: 0.55  # total gripper closing (m) — must be ≥ block width (0.6 m) minus small squeeze; 0.4 hit the joint limit
     # q9 is the total gripper opening. Gazebo maps this to half travel per rail.
     gripper_command_scale: 1.0
     # Per-segment durations in seconds (tune for commissioning)

@@ -13,10 +13,10 @@ grip_traj_server:
       - "q9_left_rail_joint"
     dt_target: 0.01
     tcp_z_offset: 0.95  # K8 → virtual TCP (grip point), PZS100 rail length
-    block_grip_z_offset: 0.0  # Block center -> virtual TCP / grip point
+    block_grip_z_offset: 0.2  # Block center -> virtual TCP / grip point
     use_passive_steady_state: true
     passive_steady_state_iterations: 3
-    lift_height: 0.5
+    lift_height: 1.0
     gripper_open_position: 1.4   # total gripper opening (m)
     gripper_close_position: 0.55  # total gripper closing (m) — must be ≥ block width (0.6 m) minus small squeeze; 0.4 hit the joint limit
     # q9 is the total gripper opening. Gazebo maps this to half travel per rail.

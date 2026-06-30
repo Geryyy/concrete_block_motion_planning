@@ -376,6 +376,27 @@ class GripTrajServerSimple(Node):
             response.success = 0
             return response
 
+        if phase == 4 and len(result.q_traj) > 0:
+            start_k8 = self._fk(result.q_traj[0])
+            end_k8 = self._fk(result.q_traj[-1])
+            start_tcp = self._fk_virtual_tcp(result.q_traj[0])
+            end_tcp = self._fk_virtual_tcp(result.q_traj[-1])
+            q_delta = result.q_traj[-1] - result.q_traj[0]
+            named_delta = ", ".join(
+                f"{name}:{delta:+.3f}"
+                for name, delta in zip(self._joint_names, q_delta)
+                if abs(delta) > 1e-3
+            )
+            self.get_logger().info(
+                "Lift trajectory | "
+                f"configured_lift={self._cfg.lift_height:.3f}m "
+                f"{result.message} "
+                f"K8_z={start_k8[2]:.3f}->{end_k8[2]:.3f} "
+                f"TCP_z={start_tcp[2]:.3f}->{end_tcp[2]:.3f} "
+                f"duration={result.times[-1]:.2f}s "
+                f"q_delta=[{named_delta}]"
+            )
+
         # Convert to JointTrajectory msg
         traj = JointTrajectory()
         traj.joint_names = list(self._joint_names)

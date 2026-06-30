@@ -157,6 +157,14 @@ def _lift(q0, phi_tool_n, sd, ik_solve_fn, fk_fn, cfg, grip_idx):
             pos, vel, acc, times = cosine_interpolate(
                 q0, q_lifted, cfg.duration_lift * sd, cfg.dt,
             )
-            return GripTrajectoryResult(True, pos, vel, acc, times)
+            actual_lift = float(lift_xyz[2] - current_xyz[2])
+            return GripTrajectoryResult(
+                True,
+                pos,
+                vel,
+                acc,
+                times,
+                message=f"lift_scale={scale:.2f} actual_lift={actual_lift:.3f}",
+            )
 
     return _fail(len(q0), "IK failed for lift target")

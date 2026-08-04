@@ -2,11 +2,12 @@
 """Simple grip trajectory server.
 
 Drop-in replacement for timber_crane_motion_planning/grip_traj_server.
-Uses cosine-interpolated joint-space trajectories with analytic IK.
+Uses analytic IK plus bounded, minimum-time q9 trajectories.
 """
 
 from __future__ import annotations
 
+from collections import deque
 import math
 
 import numpy as np
@@ -16,6 +17,7 @@ from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import Path as NavPath
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Bool, Float64
 from tf2_ros import StaticTransformBroadcaster
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from timber_crane_planning_interfaces.srv import CalcGripMovement
@@ -45,7 +47,6 @@ else:
 
 from grip_trajectory import GripTrajectoryConfig, compute_grip_trajectory  # noqa: E402
 from motion_planning.mechanics import (  # noqa: E402
-    AnalyticModelConfig,
     ModelDescription,
     create_crane_config,
 )
@@ -104,9 +105,16 @@ class GripTrajServerSimple(Node):
         # Combined with tcp_z_offset this gives the full CoG→K8 offset.
         self.declare_parameter("block_grip_z_offset", -0.3)
         self.declare_parameter("use_passive_steady_state", False)
+        # Lift-off starts from the measured passive state.  Contact and a
+        # freshly grasped, off-centre block make a gravity-only steady-state
+        # prediction unreliable at this point.
+        self.declare_parameter("lift_use_passive_steady_state", False)
         self.declare_parameter("passive_steady_state_iterations", 3)
-        # Per-segment durations (seconds) — tune these for commissioning
-        self.declare_parameter("duration_gripper", 2.0)
+        self.declare_parameter("passive_settle_velocity_threshold_radps", 0.02)
+        self.declare_parameter("passive_settle_window_s", 0.75)
+        # Authoritative q9 limits; tune and validate these on the real crane.
+        self.declare_parameter("gripper_max_velocity_mps", 0.10)
+        self.declare_parameter("gripper_max_acceleration_mps2", 0.25)
         self.declare_parameter("duration_descend", 5.0)
         self.declare_parameter("duration_lift", 5.0)
 
@@ -114,12 +122,27 @@ class GripTrajServerSimple(Node):
             self.get_parameter("controlled_joint_names").value
         )
         grip_scale = self.get_parameter("gripper_command_scale").value
+        gripper_max_velocity = self.get_parameter("gripper_max_velocity_mps").value
+        gripper_max_acceleration = self.get_parameter(
+            "gripper_max_acceleration_mps2"
+        ).value
+        if (
+            not math.isfinite(gripper_max_velocity)
+            or not math.isfinite(gripper_max_acceleration)
+            or gripper_max_velocity <= 0.0
+            or gripper_max_acceleration <= 0.0
+        ):
+            raise ValueError(
+                "gripper_max_velocity_mps and gripper_max_acceleration_mps2 "
+                "must be finite, positive values"
+            )
         self._cfg = GripTrajectoryConfig(
             dt=self.get_parameter("dt_target").value,
             lift_height=self.get_parameter("lift_height").value,
             gripper_open_position=self.get_parameter("gripper_open_position").value * grip_scale,
             gripper_close_position=self.get_parameter("gripper_close_position").value * grip_scale,
-            duration_gripper=self.get_parameter("duration_gripper").value,
+            gripper_max_velocity_mps=gripper_max_velocity,
+            gripper_max_acceleration_mps2=gripper_max_acceleration,
             duration_descend=self.get_parameter("duration_descend").value,
             duration_lift=self.get_parameter("duration_lift").value,
         )
@@ -129,13 +152,37 @@ class GripTrajServerSimple(Node):
         self._use_passive_steady_state = bool(
             self.get_parameter("use_passive_steady_state").value
         )
+        self._lift_use_passive_steady_state = bool(
+            self.get_parameter("lift_use_passive_steady_state").value
+        )
         self._passive_steady_state_iterations = max(
             1,
             int(self.get_parameter("passive_steady_state_iterations").value),
         )
+        self._passive_settle_threshold = float(
+            self.get_parameter("passive_settle_velocity_threshold_radps").value
+        )
+        self._passive_settle_window_s = float(
+            self.get_parameter("passive_settle_window_s").value
+        )
+        if (
+            not math.isfinite(self._passive_settle_threshold)
+            or not math.isfinite(self._passive_settle_window_s)
+            or self._passive_settle_threshold < 0.0
+            or self._passive_settle_window_s <= 0.0
+        ):
+            raise ValueError(
+                "passive settle threshold must be non-negative and window positive"
+            )
 
         # Joint state subscription
         self._latest_positions: dict[str, float] = {}
+        self._latest_velocities: dict[str, float] = {}
+        self._previous_position_samples: dict[str, tuple[float, float]] = {}
+        self._passive_velocity_samples: deque[tuple[float, float]] = deque()
+        self._passive_metric_start_s: float | None = None
+        self._passive_velocity_rms = float("nan")
+        self._passive_settled = False
         self._js_stamp = None
         js_topic = self.get_parameter("joint_states_topic").value
         self.create_subscription(JointState, js_topic, self._on_joint_state, 10)
@@ -152,6 +199,12 @@ class GripTrajServerSimple(Node):
         self._pin = pin
         # Path visualization publisher (same topics as timber grip_traj_server)
         self._path_pub = self.create_publisher(NavPath, "tcp_path", 10)
+        self._passive_settled_pub = self.create_publisher(
+            Bool, "grip_traj/passive_settled", 10
+        )
+        self._passive_velocity_rms_pub = self.create_publisher(
+            Float64, "grip_traj/passive_velocity_rms", 10
+        )
 
         # Publish virtual_tcp TF derived from tcp_z_offset (single source of truth)
         self._tf_broadcaster = StaticTransformBroadcaster(self)
@@ -173,6 +226,14 @@ class GripTrajServerSimple(Node):
                 else "measured joint_states held fixed"
             )
         )
+        self.get_logger().info(
+            "Lift passive handling: "
+            + (
+                "static equilibrium refinement enabled"
+                if self._lift_use_passive_steady_state
+                else "start from measured passive state"
+            )
+        )
 
         # Service
         svc_name = self.get_parameter("service_name").value
@@ -182,10 +243,71 @@ class GripTrajServerSimple(Node):
         )
 
     def _on_joint_state(self, msg: JointState):
+        stamp_s = msg.header.stamp.sec + msg.header.stamp.nanosec * 1.0e-9
+        if stamp_s <= 0.0:
+            stamp_s = self.get_clock().now().nanoseconds * 1.0e-9
         for i, name in enumerate(msg.name):
             if i < len(msg.position):
-                self._latest_positions[name] = msg.position[i]
+                position = float(msg.position[i])
+                measured_velocity = (
+                    float(msg.velocity[i])
+                    if i < len(msg.velocity) and math.isfinite(msg.velocity[i])
+                    else None
+                )
+                previous = self._previous_position_samples.get(name)
+                if measured_velocity is None and previous is not None:
+                    previous_position, previous_stamp_s = previous
+                    elapsed_s = stamp_s - previous_stamp_s
+                    if elapsed_s > 1.0e-4:
+                        measured_velocity = (position - previous_position) / elapsed_s
+                self._latest_positions[name] = position
+                if measured_velocity is not None and math.isfinite(measured_velocity):
+                    self._latest_velocities[name] = measured_velocity
+                self._previous_position_samples[name] = (position, stamp_s)
         self._js_stamp = msg.header.stamp
+        self._update_passive_settle_metric(stamp_s)
+
+    def _update_passive_settle_metric(self, stamp_s: float) -> None:
+        """Publish a moving RMS metric; it never gates trajectory planning."""
+        passive_names = self._config.passive_joints
+        if any(name not in self._latest_velocities for name in passive_names):
+            return
+        max_abs_velocity = max(
+            abs(self._latest_velocities[name]) for name in passive_names
+        )
+        if self._passive_velocity_samples and stamp_s < self._passive_velocity_samples[-1][0]:
+            self._passive_velocity_samples.clear()
+            self._passive_metric_start_s = None
+        if self._passive_metric_start_s is None:
+            self._passive_metric_start_s = stamp_s
+        self._passive_velocity_samples.append((stamp_s, max_abs_velocity))
+        earliest_s = stamp_s - self._passive_settle_window_s
+        while self._passive_velocity_samples[0][0] < earliest_s:
+            self._passive_velocity_samples.popleft()
+
+        samples = np.fromiter(
+            (value for _, value in self._passive_velocity_samples), dtype=float
+        )
+        self._passive_velocity_rms = float(np.sqrt(np.mean(samples**2)))
+        window_complete = (
+            stamp_s - self._passive_metric_start_s
+            >= self._passive_settle_window_s
+        )
+        settled = (
+            window_complete
+            and self._passive_velocity_rms <= self._passive_settle_threshold
+        )
+        if settled != self._passive_settled:
+            self.get_logger().info(
+                "Passive settle state: "
+                f"{'settled' if settled else 'moving'} "
+                f"(max-joint velocity RMS={self._passive_velocity_rms:.4f} rad/s)"
+            )
+        self._passive_settled = settled
+        self._passive_settled_pub.publish(Bool(data=settled))
+        self._passive_velocity_rms_pub.publish(
+            Float64(data=self._passive_velocity_rms)
+        )
 
     def _get_q0(self) -> np.ndarray | None:
         """Extract current joint positions ordered by controlled_joint_names."""
@@ -202,7 +324,12 @@ class GripTrajServerSimple(Node):
         return q0
 
     def _ik_solve(
-        self, target_xyz: np.ndarray, phi_tool_n: float, seed_q: np.ndarray
+        self,
+        target_xyz: np.ndarray,
+        phi_tool_n: float,
+        seed_q: np.ndarray,
+        *,
+        use_passive_steady_state: bool,
     ) -> np.ndarray | None:
         """Solve IK and return full joint vector (including gripper from seed)."""
         T = pose_from_pos_yaw(target_xyz, phi_tool_n)
@@ -233,7 +360,7 @@ class GripTrajServerSimple(Node):
             )
             solved_fixed = fixed
 
-            if result is None or not result.success or not self._use_passive_steady_state:
+            if result is None or not result.success or not use_passive_steady_state:
                 break
 
             q_values = dict(seed)
@@ -264,7 +391,7 @@ class GripTrajServerSimple(Node):
                 break
 
         needs_final_refine = (
-            self._use_passive_steady_state
+            use_passive_steady_state
             and result is not None
             and result.success
             and fixed != solved_fixed
@@ -349,6 +476,11 @@ class GripTrajServerSimple(Node):
         phi_tool_n = request.phi_tool_n
         phase = request.select_phases
         slow_down = max(request.slow_down, 0.1)
+        use_passive_steady_state = (
+            self._lift_use_passive_steady_state
+            if phase == 4
+            else self._use_passive_steady_state
+        )
 
         current_xyz = self._fk(q0)
         self.get_logger().info(
@@ -365,7 +497,12 @@ class GripTrajServerSimple(Node):
             phi_tool_n=phi_tool_n,
             phase=phase,
             slow_down=slow_down,
-            ik_solve_fn=self._ik_solve,
+            ik_solve_fn=lambda xyz, yaw, seed: self._ik_solve(
+                xyz,
+                yaw,
+                seed,
+                use_passive_steady_state=use_passive_steady_state,
+            ),
             fk_fn=self._fk,
             cfg=self._cfg,
             gripper_index=self._gripper_index,
@@ -394,6 +531,8 @@ class GripTrajServerSimple(Node):
                 f"K8_z={start_k8[2]:.3f}->{end_k8[2]:.3f} "
                 f"TCP_z={start_tcp[2]:.3f}->{end_tcp[2]:.3f} "
                 f"duration={result.times[-1]:.2f}s "
+                f"passive_policy={'equilibrium' if use_passive_steady_state else 'measured'} "
+                f"passive_settled={self._passive_settled} "
                 f"q_delta=[{named_delta}]"
             )
 

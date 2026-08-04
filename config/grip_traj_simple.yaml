@@ -15,13 +15,26 @@ grip_traj_server:
     tcp_z_offset: 0.95  # K8 → virtual TCP (grip point), PZS100 rail length
     block_grip_z_offset: 0.2  # Block center -> virtual TCP / grip point
     use_passive_steady_state: true
+    # A lift starts while the block may still contact uneven ground.  Start it
+    # from measured theta6/theta7 rather than a bare-crane equilibrium model.
+    lift_use_passive_steady_state: false
     passive_steady_state_iterations: 3
+    # Informational only: published as /grip_traj/passive_{settled,velocity_rms}.
+    # It does not block a lift. Tune after measuring real passive-joint noise.
+    passive_settle_velocity_threshold_radps: 0.02
+    passive_settle_window_s: 0.75
     lift_height: 1.0
     gripper_open_position: 1.4   # total gripper opening (m)
     gripper_close_position: 0.55  # total gripper closing (m) — must be ≥ block width (0.6 m) minus small squeeze; 0.4 hit the joint limit
     # q9 is the total gripper opening. Gazebo maps this to half travel per rail.
     gripper_command_scale: 1.0
-    # Per-segment durations in seconds (tune for commissioning)
-    duration_gripper: 8.0
+    # Authoritative q9 limits (in the commanded q9 coordinate) for the
+    # rest-to-rest minimum-time profile.
+    # Tune these on real hardware; the planner will never exceed them.
+    gripper_max_velocity_mps: 0.10
+    gripper_max_acceleration_mps2: 0.25
+    # Per-segment durations in seconds for the multi-joint crane motions.
+    # LIFT uses a zero-acceleration, minimum-jerk profile; increase this first
+    # if lift-off excites passive-joint sway.
     duration_descend: 5.0
     duration_lift: 5.0

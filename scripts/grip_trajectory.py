@@ -17,8 +17,8 @@ Place sequence: DESCEND → OPEN → LIFT
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -159,10 +159,23 @@ def gripper_time_optimal_interpolate(
     # acceleration and the exact endpoint so the controller does not have to
     # extrapolate a phase boundary.
     regular_times = np.arange(0.0, duration, dt)
-    times = np.unique(np.concatenate((
-        regular_times,
-        np.array([0.0, ramp_time, ramp_time + cruise_time, duration]),
-    )))
+    # Round to nanoseconds before de-duplicating. A switch point and a grid
+    # sample can land within one float ULP of each other -- e.g. 2.5 and
+    # 2.5000000000000004 -- which np.unique keeps as distinct, but
+    # JointTrajectory time_from_start is integer nanoseconds, so both collapse
+    # onto the same stamp and the controller rejects the trajectory for not
+    # being strictly increasing in time.
+    times = np.unique(
+        np.round(
+            np.concatenate(
+                (
+                    regular_times,
+                    np.array([0.0, ramp_time, ramp_time + cruise_time, duration]),
+                )
+            ),
+            9,
+        )
+    )
     positions = np.empty_like(times)
     velocities = np.empty_like(times)
     accelerations = np.empty_like(times)
@@ -246,7 +259,10 @@ def _descend(q0, target_xyz, phi_tool_n, sd, ik_solve_fn, cfg, grip_idx):
         return _fail(len(q0), "IK failed for descend target")
     q_target[grip_idx] = q0[grip_idx]
     pos, vel, acc, times = cosine_interpolate(
-        q0, q_target, cfg.duration_descend * sd, cfg.dt,
+        q0,
+        q_target,
+        cfg.duration_descend * sd,
+        cfg.dt,
     )
     return GripTrajectoryResult(True, pos, vel, acc, times)
 
@@ -290,7 +306,10 @@ def _lift(q0, phi_tool_n, sd, ik_solve_fn, fk_fn, cfg, grip_idx):
         if q_lifted is not None:
             q_lifted[grip_idx] = q0[grip_idx]
             pos, vel, acc, times = minimum_jerk_interpolate(
-                q0, q_lifted, cfg.duration_lift * sd, cfg.dt,
+                q0,
+                q_lifted,
+                cfg.duration_lift * sd,
+                cfg.dt,
             )
             actual_lift = float(lift_xyz[2] - current_xyz[2])
             return GripTrajectoryResult(

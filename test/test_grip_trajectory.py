@@ -11,11 +11,11 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from grip_trajectory import (  # noqa: E402
-    GripTrajectoryConfig,
     PHASE_CLOSE,
     PHASE_LIFT,
-    gripper_time_optimal_interpolate,
+    GripTrajectoryConfig,
     compute_grip_trajectory,
+    gripper_time_optimal_interpolate,
     minimum_jerk_interpolate,
 )
 
@@ -73,7 +73,9 @@ def test_gripper_uses_current_q9_and_slowdown_only_reduces_speed() -> None:
     assert np.allclose(normal.q_traj[:, :7], q0[:7])
     assert np.isclose(requested_faster.times[-1], normal.times[-1])
     assert np.isclose(slower.times[-1], 2.0 * normal.times[-1])
-    assert np.max(np.abs(normal.qd_traj[:, 7])) <= cfg.gripper_max_velocity_mps + 1.0e-12
+    assert (
+        np.max(np.abs(normal.qd_traj[:, 7])) <= cfg.gripper_max_velocity_mps + 1.0e-12
+    )
 
 
 def test_minimum_jerk_lift_has_zero_start_and_end_acceleration() -> None:
@@ -97,7 +99,9 @@ def test_lift_uses_minimum_jerk_profile() -> None:
     def fk_fn(q: np.ndarray) -> np.ndarray:
         return np.array([q[0], q[1], q[3]])
 
-    def ik_solve_fn(target_xyz: np.ndarray, _yaw: float, seed_q: np.ndarray) -> np.ndarray:
+    def ik_solve_fn(
+        target_xyz: np.ndarray, _yaw: float, seed_q: np.ndarray
+    ) -> np.ndarray:
         q_target = seed_q.copy()
         q_target[3] = target_xyz[2]
         return q_target
@@ -109,3 +113,20 @@ def test_lift_uses_minimum_jerk_profile() -> None:
     assert result.success
     assert np.allclose(result.qdd_traj[[0, -1]], 0.0)
     assert np.isclose(result.q_traj[-1, 3], 0.20)
+
+
+def test_gripper_times_stay_strictly_increasing_as_ros_durations() -> None:
+    """Times must remain distinct after truncation to integer nanoseconds.
+
+    JointTrajectory time_from_start is integer nanoseconds. A profile switch
+    point and a sampling-grid point can differ by a single float ULP, which is
+    distinct to np.unique but collapses onto one stamp in the message, and the
+    controller then rejects the trajectory as not strictly increasing in time.
+    0.300 -> 0.550 m is a case that used to collide at t = 2.5 s.
+    """
+    for start, end in [(0.300, 0.550), (0.550, 1.400), (1.400, 0.550), (0.0, 1.400)]:
+        _, _, _, time_s = gripper_time_optimal_interpolate(start, end, 0.10, 0.25, 0.01)
+        stamps = [(int(t), int((t - int(t)) * 1e9)) for t in time_s]
+        assert all(stamps[i] > stamps[i - 1] for i in range(1, len(stamps))), (
+            f"duplicate time_from_start for {start} -> {end}"
+        )

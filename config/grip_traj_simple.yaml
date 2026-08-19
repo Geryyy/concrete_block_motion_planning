@@ -24,9 +24,22 @@ grip_traj_server:
     passive_settle_velocity_threshold_radps: 0.02
     passive_settle_window_s: 0.75
     lift_height: 1.0
-    gripper_open_position: 1.4   # total gripper opening (m)
-    gripper_close_position: 0.55  # total gripper closing (m) — must be ≥ block width (0.6 m) minus small squeeze; 0.4 hit the joint limit
-    # q9 is the total gripper opening. Gazebo maps this to half travel per rail.
+    # Real-PZS100 coordinates.  q9_left_rail_joint is the rail travel reported
+    # by EpsilonCraneHardwareInterface, and the live /robot_description limits
+    # it to [0.0, 0.538] (velocity 0.12).  The previous values (open 1.4 /
+    # close 0.55) were Gazebo coordinates, where q9 is the TOTAL gripper
+    # opening; both sat above the 0.538 end stop, so every gripper move on
+    # hardware clamped to the limit the jaws already rested on -- q9 stayed at
+    # ~0.539, FollowJointTrajectory "succeeded" having moved nothing, and the
+    # grasp check timed out.  The Gazebo launches share this file and will need
+    # their own overlay when sim is used again.
+    gripper_open_position: 0.538  # open end stop
+    # Command the rails shut and let the block stall them -- that residual
+    # command error is what builds squeeze.  A held block stops q9 around
+    # 0.1-0.2, which is what position_window in gripper_grasp_detector_real.yaml
+    # brackets; an empty close runs down to ~0.0 and is correctly rejected.
+    gripper_close_position: 0.0
+    # q9 is already the commanded joint coordinate on hardware -- no halving.
     gripper_command_scale: 1.0
     # Authoritative q9 limits (in the commanded q9 coordinate) for the
     # rest-to-rest minimum-time profile.

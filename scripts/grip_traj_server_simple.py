@@ -347,6 +347,31 @@ class GripTrajServerSimple(Node):
         }
 
         fixed = measured_passive
+        if use_passive_steady_state:
+            # Solve from the settled pendulum, not from the measured angles.
+            # Contact tilts the tip/tilt pair (a block resting on uneven ground
+            # held theta6 at 39 deg, statically), and iteration 1 used to solve
+            # against that frozen tilt while pose_from_pos_yaw asks for an
+            # upright tool -- unsatisfiable, and the failure broke out of the
+            # loop before the equilibrium model was ever consulted, which is
+            # exactly the case it exists for.  Every pose we solve for here is
+            # one the pendulum reaches hanging free, so start there; the loop
+            # below still refines against the solved arm pose.
+            q_values = dict(seed)
+            for follower, leader in self._config.tied_joints.items():
+                if leader in q_values:
+                    q_values[follower] = q_values[leader]
+            for joint_name in self._config.locked_joints:
+                q_values.setdefault(joint_name, 0.0)
+            fixed = passive_joint_equilibrium(
+                pin_model=self._desc.model,
+                pin_data=self._eq_pin_data,
+                pin_module=self._pin,
+                q_values=q_values,
+                passive_joint_names=self._config.passive_joints,
+                seed=measured_passive,
+            )
+
         result = None
         solved_fixed = fixed
         for _ in range(self._passive_steady_state_iterations):

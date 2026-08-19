@@ -15,9 +15,14 @@ grip_traj_server:
     tcp_z_offset: 0.95  # K8 → virtual TCP (grip point), PZS100 rail length
     block_grip_z_offset: 0.2  # Block center -> virtual TCP / grip point
     use_passive_steady_state: true
-    # A lift starts while the block may still contact uneven ground.  Start it
-    # from measured theta6/theta7 rather than a bare-crane equilibrium model.
-    lift_use_passive_steady_state: false
+    # A lift ENDS with the block hanging free, which is equilibrium again.  The
+    # tilt measured at lift-off is a contact artifact -- the gripper resting on
+    # a block on uneven ground held theta6 at 39 deg statically -- and no pose
+    # the crane can hold preserves it once the block leaves the ground.  Solving
+    # the lift against that frozen tilt made the IK unsatisfiable (all four
+    # fallback lift heights failed instantly).  The low-level MPC damps the
+    # swing excited during the ascent.
+    lift_use_passive_steady_state: true
     passive_steady_state_iterations: 3
     # Informational only: published as /grip_traj/passive_{settled,velocity_rms}.
     # It does not block a lift. Tune after measuring real passive-joint noise.

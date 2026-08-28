@@ -2,6 +2,10 @@
 
 Grip-trajectory planner for the concrete-block pick-and-place pipeline. Owns the `grip_traj_server` node, which turns the gripper's descend / close / open / lift phases into joint trajectories, backed by the vendored `cbmp` kinematics/mechanics backend. Driven by the grip subtrees in [concrete_block_behavior_tree](../concrete_block_behavior_tree/).
 
+This package is the authoritative provider of the `grip_traj_movement` grip-motion
+service. The `crane_msgs/PlanGrip` definition remains only as a compatibility
+schema; `crane_planning` does not provide a `/crane/plan_grip` server.
+
 > Wall-plan / task sequencing is **not** here — it lives in [concrete_block_assembly_planning](../concrete_block_assembly_planning/). The long-range point-to-point ("A2B") move service (`a2b_movement`) is served by the **timber_crane** stack, not this package.
 
 ## Responsibilities

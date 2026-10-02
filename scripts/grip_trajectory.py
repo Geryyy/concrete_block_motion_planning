@@ -1,8 +1,8 @@
 """Pure trajectory generation for grip movements.
 
 No ROS dependencies. Operates on numpy arrays and returns structured data.
-Uses cosine interpolation for DESCEND, a zero-acceleration minimum-jerk
-profile for LIFT, and a time-optimal bounded trapezoidal profile for q9.
+Uses a zero-acceleration minimum-jerk profile for DESCEND and LIFT, and a
+time-optimal bounded trapezoidal profile for q9.
 
 Four atomic primitives, sequenced by the behavior tree:
   DESCEND (1) — IK move from current position to target, preserves gripper state.
@@ -57,31 +57,6 @@ class GripTrajectoryResult:
 def _fail(n_joints: int, message: str) -> GripTrajectoryResult:
     e = np.empty((0, n_joints))
     return GripTrajectoryResult(False, e, e, e.copy(), np.empty(0), message)
-
-
-def cosine_interpolate(
-    q_start: np.ndarray,
-    q_end: np.ndarray,
-    duration: float,
-    dt: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Cosine interpolation between two joint configurations.
-
-    s(t) = 0.5 * (1 - cos(pi * t / T))  =>  smooth start/stop, zero velocity at endpoints.
-    """
-    n_pts = max(int(np.ceil(duration / dt)), 2)
-    times = np.linspace(0.0, duration, n_pts)
-    dq = q_end - q_start
-
-    s = 0.5 * (1.0 - np.cos(np.pi * times / duration))
-    s_dot = 0.5 * np.pi / duration * np.sin(np.pi * times / duration)
-    s_ddot = 0.5 * (np.pi / duration) ** 2 * np.cos(np.pi * times / duration)
-
-    positions = q_start[np.newaxis, :] + s[:, np.newaxis] * dq[np.newaxis, :]
-    velocities = s_dot[:, np.newaxis] * dq[np.newaxis, :]
-    accelerations = s_ddot[:, np.newaxis] * dq[np.newaxis, :]
-
-    return positions, velocities, accelerations, times
 
 
 def minimum_jerk_interpolate(
@@ -258,7 +233,7 @@ def _descend(q0, target_xyz, phi_tool_n, sd, ik_solve_fn, cfg, grip_idx):
     if q_target is None:
         return _fail(len(q0), "IK failed for descend target")
     q_target[grip_idx] = q0[grip_idx]
-    pos, vel, acc, times = cosine_interpolate(
+    pos, vel, acc, times = minimum_jerk_interpolate(
         q0,
         q_target,
         cfg.duration_descend * sd,

@@ -29,6 +29,10 @@ PHASE_OPEN = 3
 PHASE_LIFT = 4
 
 
+#: Task-space spacing of the descent's IK waypoints.
+DESCEND_STEP_M = 0.05
+
+
 @dataclass
 class GripTrajectoryConfig:
     dt: float = 0.01
@@ -212,7 +216,9 @@ def compute_grip_trajectory(
     sd = max(slow_down, 0.1)
 
     if phase == PHASE_DESCEND:
-        return _descend(q0, target_xyz, phi_tool_n, sd, ik_solve_fn, cfg, gripper_index)
+        return _descend(
+            q0, target_xyz, phi_tool_n, sd, ik_solve_fn, fk_fn, cfg, gripper_index
+        )
     elif phase == PHASE_CLOSE:
         return _set_gripper(q0, cfg.gripper_close_position, sd, cfg, gripper_index)
     elif phase == PHASE_OPEN:
@@ -223,22 +229,38 @@ def compute_grip_trajectory(
         return _fail(len(q0), f"Unknown phase: {phase}")
 
 
-def _descend(q0, target_xyz, phi_tool_n, sd, ik_solve_fn, cfg, grip_idx):
-    """Move from current position to target. Gripper stays as-is.
+def _descend(q0, target_xyz, phi_tool_n, sd, ik_solve_fn, fk_fn, cfg, grip_idx):
+    """Move from current position to target along a straight line. Gripper stays as-is.
 
-    When not directly above the target this produces an angled approach,
-    which helps slide against existing blocks during placement.
+    Straight in task space, not in joint space: a joint-space line from the 3.7 m carry
+    height bowed 7 cm radially and set the block on its neighbour, 2 cm away (sim, wall
+    run 65). IK every `DESCEND_STEP_M`, each seeded by the last; minimum-jerk along the line.
     """
-    q_target = ik_solve_fn(target_xyz, phi_tool_n, q0)
-    if q_target is None:
-        return _fail(len(q0), "IK failed for descend target")
-    q_target[grip_idx] = q0[grip_idx]
-    pos, vel, acc, times = minimum_jerk_interpolate(
-        q0,
-        q_target,
-        cfg.duration_descend * sd,
-        cfg.dt,
+    start = np.asarray(fk_fn(q0), dtype=float)
+    target = np.asarray(target_xyz, dtype=float)
+    count = max(int(np.ceil(np.linalg.norm(target - start) / DESCEND_STEP_M)), 1)
+    waypoints = [np.asarray(q0, dtype=float)]
+    for k in range(1, count + 1):
+        q = ik_solve_fn(start + (target - start) * k / count, phi_tool_n, waypoints[-1])
+        if q is None:
+            return _fail(len(q0), f"IK failed for descend waypoint {k}/{count}")
+        q = np.asarray(q, dtype=float)
+        q[grip_idx] = q0[grip_idx]
+        waypoints.append(q)
+    waypoints = np.array(waypoints)
+
+    duration = cfg.duration_descend * sd
+    _, _, _, times = minimum_jerk_interpolate(np.zeros(1), np.ones(1), duration, cfg.dt)
+    u = times / duration
+    s = (10.0 * u**3 - 15.0 * u**4 + 6.0 * u**5) * count
+    nodes = np.arange(count + 1)
+    pos = np.column_stack(
+        [np.interp(s, nodes, waypoints[:, j]) for j in range(waypoints.shape[1])]
     )
+    vel = np.gradient(pos, times, axis=0)
+    acc = np.gradient(vel, times, axis=0)
+    vel[[0, -1]] = 0.0
+    acc[[0, -1]] = 0.0
     return GripTrajectoryResult(True, pos, vel, acc, times)
 
 

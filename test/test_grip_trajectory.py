@@ -130,3 +130,29 @@ def test_gripper_times_stay_strictly_increasing_as_ros_durations() -> None:
         assert all(stamps[i] > stamps[i - 1] for i in range(1, len(stamps))), (
             f"duplicate time_from_start for {start} -> {end}"
         )
+
+
+def test_descend_stays_on_the_straight_line() -> None:
+    """A joint-space line bows in task space; the descent must not (wall run 65, 7 cm)."""
+
+    def fk(q):  # slew, radius, height: a joint-space line between two radii is an arc
+        return np.array([q[1] * np.cos(q[0]), q[1] * np.sin(q[0]), q[2]])
+
+    def ik(xyz, _yaw, seed):
+        q = np.array(seed, dtype=float)
+        q[:3] = [np.arctan2(xyz[1], xyz[0]), np.hypot(xyz[0], xyz[1]), xyz[2]]
+        return q
+
+    q0 = np.array([0.0, 8.0, 3.7, 0.0, 0.0, 0.0, 0.0, 0.2])
+    target = np.array([7.0, 2.0, 0.4])
+    result = compute_grip_trajectory(
+        q0, target, 0.0, 1, 1.0, ik, fk, GripTrajectoryConfig()
+    )
+    assert result.success
+    start = fk(q0)
+    line = (target - start) / np.linalg.norm(target - start)
+    off_line = [np.linalg.norm((fk(q) - start) - np.dot(fk(q) - start, line) * line)
+                for q in result.q_traj]
+    assert max(off_line) < 0.005
+    assert np.allclose(fk(result.q_traj[-1]), target)
+    assert result.q_traj[-1][7] == 0.2, "the gripper does not move"

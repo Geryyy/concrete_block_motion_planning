@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Mapping, Sequence
+from typing import Mapping
 
 import numpy as np
 
 from .config import AnalyticModelConfig
-from .crane_geometry import DEFAULT_CRANE_GEOMETRY, CraneGeometryConstants
+from .crane_geometry import CraneGeometryConstants
 from .model_description import ModelDescription
 from .pinocchio_utils import fk_homogeneous, joint_bounds
 from .pose_conventions import phi_tool_from_rotation
@@ -49,9 +49,9 @@ class IkSolveResult:
     success: bool
     status: str
     message: str
-    q_dynamic: Dict[str, float]
-    q_actuated: Dict[str, float]
-    q_passive: Dict[str, float]
+    q_dynamic: dict[str, float]
+    q_actuated: dict[str, float]
+    q_passive: dict[str, float]
     iterations: int
     cost: float
     pos_error_m: float
@@ -74,7 +74,9 @@ class _IKBase:
         return float(np.arctan2(np.sin(x), np.cos(x)))
 
     @staticmethod
-    def _midrange_cost(q: Mapping[str, float], bounds: Mapping[str, tuple[float, float]]) -> float:
+    def _midrange_cost(
+        q: Mapping[str, float], bounds: Mapping[str, tuple[float, float]]
+    ) -> float:
         vals: list[float] = []
         for jn in ("theta2_boom_joint", "theta3_arm_joint", "q4_big_telescope"):
             if jn not in q or jn not in bounds:
@@ -88,7 +90,9 @@ class _IKBase:
         v = np.asarray(vals, dtype=float)
         return float(np.linalg.norm(v - 0.5 * np.ones_like(v)))
 
-    def _fk(self, q_values: Mapping[str, float], *, base_frame: str, end_frame: str) -> np.ndarray:
+    def _fk(
+        self, q_values: Mapping[str, float], *, base_frame: str, end_frame: str
+    ) -> np.ndarray:
         return fk_homogeneous(
             pin_model=self._pin_model,
             pin_data=self._pin_data,
@@ -151,7 +155,12 @@ class AnalyticIKSolver(_IKBase):
     # Frame that marks the end of the 2-link arm geometry.
     _GEOMETRY_FRAME = "K5_inner_telescope"
 
-    def __init__(self, desc: ModelDescription, config: AnalyticModelConfig, geometry: CraneGeometryConstants) -> None:
+    def __init__(
+        self,
+        desc: ModelDescription,
+        config: AnalyticModelConfig,
+        geometry: CraneGeometryConstants,
+    ) -> None:
         super().__init__(desc, config)
         self._geometry = geometry
         self._base_frame = "K0_mounting_base"
@@ -230,7 +239,9 @@ class AnalyticIKSolver(_IKBase):
                     theta1_new = theta1 + 2.0 * np.pi
                     if theta1_new < hi1:
                         theta1 = theta1_new
-        if (np.isfinite(lo1) and theta1 < lo1 - 1e-9) or (np.isfinite(hi1) and theta1 > hi1 + 1e-9):
+        if (np.isfinite(lo1) and theta1 < lo1 - 1e-9) or (
+            np.isfinite(hi1) and theta1 > hi1 + 1e-9
+        ):
             return None
 
         if "theta8_rotator_joint" in fixed:
@@ -239,7 +250,9 @@ class AnalyticIKSolver(_IKBase):
             theta8 = self._wrap_angle(theta1 - phi_tool)
             if abs(q0_8 - theta8) > np.pi:
                 theta8 -= 2.0 * np.pi * float(np.sign(theta8 - q0_8))
-        if (np.isfinite(lo8) and theta8 < lo8 - 1e-9) or (np.isfinite(hi8) and theta8 > hi8 + 1e-9):
+        if (np.isfinite(lo8) and theta8 < lo8 - 1e-9) or (
+            np.isfinite(hi8) and theta8 > hi8 + 1e-9
+        ):
             return None
 
         # -----------------------------------------------------------------------
@@ -268,8 +281,12 @@ class AnalyticIKSolver(_IKBase):
             if leader in q_chain_ref:
                 q_chain_ref[follower] = float(q_chain_ref[leader])
 
-        T_k5_ref = self._fk(q_chain_ref, base_frame=self._base_frame, end_frame=self._GEOMETRY_FRAME)
-        T_k8_ref = self._fk(q_chain_ref, base_frame=self._base_frame, end_frame=self._end_frame)
+        T_k5_ref = self._fk(
+            q_chain_ref, base_frame=self._base_frame, end_frame=self._GEOMETRY_FRAME
+        )
+        T_k8_ref = self._fk(
+            q_chain_ref, base_frame=self._base_frame, end_frame=self._end_frame
+        )
         # K8 position in K5 local frame (constant given theta6/theta7/theta8).
         T_k5_inv = np.linalg.inv(T_k5_ref)
         k8_in_k5 = np.asarray((T_k5_inv @ T_k8_ref)[:3, 3], dtype=float)
@@ -333,10 +350,10 @@ class AnalyticIKSolver(_IKBase):
                 return None, None, None
 
             # Triangle feasibility bounds for d45.
-            tri_hi_sq = (d_p2p5 + g.a2) ** 2 - g.a3 ** 2
+            tri_hi_sq = (d_p2p5 + g.a2) ** 2 - g.a3**2
             if tri_hi_sq <= 0.0:
                 return None, None, None
-            d45_tri_lo = float(np.sqrt(max(0.0, (d_p2p5 - g.a2) ** 2 - g.a3 ** 2))) + 1e-9
+            d45_tri_lo = float(np.sqrt(max(0.0, (d_p2p5 - g.a2) ** 2 - g.a3**2))) + 1e-9
             d45_tri_hi = float(np.sqrt(tri_hi_sq)) - 1e-9
 
             d45_lo_eff = max(d45_q4_lo, d45_tri_lo)
@@ -353,20 +370,22 @@ class AnalyticIKSolver(_IKBase):
             n_pts = 1 if d45_hi_eff - d45_lo_eff < 1e-11 else 120
             last_search_n_pts = n_pts
             d45_vec = np.linspace(d45_lo_eff, d45_hi_eff, n_pts, dtype=float)
-            link2_vec = np.sqrt(g.a3 ** 2 + d45_vec ** 2)
+            link2_vec = np.sqrt(g.a3**2 + d45_vec**2)
             q4_vec = 0.5 * (d45_vec - g.d4)
 
             # Law of cosines — angle at joint-2 (beta) and joint-3 (gamma).
             cos_beta = np.clip(
-                (g.a2 ** 2 + d_p2p5 ** 2 - link2_vec ** 2) / (2.0 * g.a2 * d_p2p5),
-                -1.0, 1.0,
+                (g.a2**2 + d_p2p5**2 - link2_vec**2) / (2.0 * g.a2 * d_p2p5),
+                -1.0,
+                1.0,
             )
             beta_vec = np.arccos(cos_beta)
             base_angle = float(np.arctan2(dp[1], dp[0]))
 
             cos_gamma = np.clip(
-                (g.a2 ** 2 + link2_vec ** 2 - d_p2p5 ** 2) / (2.0 * g.a2 * link2_vec),
-                -1.0, 1.0,
+                (g.a2**2 + link2_vec**2 - d_p2p5**2) / (2.0 * g.a2 * link2_vec),
+                -1.0,
+                1.0,
             )
             gamma_vec = np.arccos(cos_gamma)
             theta3_vec = np.arctan2(g.a3, d45_vec) - 0.5 * np.pi + gamma_vec
@@ -386,12 +405,13 @@ class AnalyticIKSolver(_IKBase):
                     valid = (theta2_vec >= lo2 - 1e-6) & (theta2_vec <= hi2 + 1e-6)
 
                 if "theta3_arm_joint" in fixed:
-                    theta3_use = np.full_like(theta3_vec, float(fixed["theta3_arm_joint"]))
+                    theta3_use = np.full_like(
+                        theta3_vec, float(fixed["theta3_arm_joint"])
+                    )
                 else:
                     theta3_use = theta3_vec
-                    valid &= (
-                        (theta3_use >= lo3 - 1e-6)
-                        & (theta3_use <= np.minimum(hi3, g.theta3_max) + 1e-6)
+                    valid &= (theta3_use >= lo3 - 1e-6) & (
+                        theta3_use <= np.minimum(hi3, g.theta3_max) + 1e-6
                     )
 
                 valid &= (q4_vec >= lo4 - 1e-6) & (q4_vec <= hi4 + 1e-6)
@@ -404,7 +424,8 @@ class AnalyticIKSolver(_IKBase):
                     ((theta2_vec - mid2) / rng2) ** 2
                     + ((theta3_use - mid3) / rng3) ** 2
                     + ((q4_vec - mid4) / rng4) ** 2
-                    + 0.1 * (
+                    + 0.1
+                    * (
                         (theta2_vec - seed_q2) ** 2
                         + (theta3_use - seed_q3) ** 2
                         + (q4_vec - seed_q4) ** 2
@@ -422,21 +443,29 @@ class AnalyticIKSolver(_IKBase):
             return best_q2_, best_q3_, best_q4_
 
         # Iterative K5 correction: start with alpha=0 (no correction),
-        # then refine until (theta2+theta3) converges.
-        alpha_prev = 0.0
+        # then refine until (theta2+theta3) converges.  alpha=0 stays the first
+        # bootstrap, so a solve that converges today is untouched.  A search
+        # collapsed onto a fixed q4 has no grid left to absorb the ~1 m K5->K8
+        # offset, and at long reach the uncorrected target is then outside the
+        # triangle, so iteration 1 fails and the loop never starts: retry from
+        # the seed's arm angle, which is within ~0.1 rad of the answer.
         best_q2: float | None = None
         best_q3: float | None = None
         best_q4: float | None = None
-        for _iter in range(8):
-            p5_corrected = _k5_target(alpha_prev)
-            q2_i, q3_i, q4_i = _run_d45_search(p5_corrected)
-            if q2_i is None:
+        for alpha_start in (0.0, seed_q2 + seed_q3):
+            alpha_prev = alpha_start
+            for _iter in range(8):
+                p5_corrected = _k5_target(alpha_prev)
+                q2_i, q3_i, q4_i = _run_d45_search(p5_corrected)
+                if q2_i is None:
+                    break
+                best_q2, best_q3, best_q4 = q2_i, q3_i, q4_i
+                alpha_i = q2_i + q3_i
+                if abs(alpha_i - alpha_prev) < 1e-4:
+                    break
+                alpha_prev = alpha_i
+            if best_q2 is not None:
                 break
-            best_q2, best_q3, best_q4 = q2_i, q3_i, q4_i
-            alpha_i = q2_i + q3_i
-            if abs(alpha_i - alpha_prev) < 1e-4:
-                break
-            alpha_prev = alpha_i
         if best_q2 is None:
             return None
 
@@ -462,19 +491,27 @@ class AnalyticIKSolver(_IKBase):
         T_try = self._fk(q_try, base_frame=base_frame, end_frame=end_frame)
         pos_err = float(np.linalg.norm(T_try[:3, 3] - p_target))
         phi_try = phi_tool_from_rotation(T_try[:3, :3])
-        rot_err = float(np.arctan2(np.sin(phi_try - phi_tool), np.cos(phi_try - phi_tool)))
+        rot_err = float(
+            np.arctan2(np.sin(phi_try - phi_tool), np.cos(phi_try - phi_tool))
+        )
         rot_err = float(abs(rot_err))
 
         if pos_err > 2e-2 or rot_err > 5e-2:
             return None
 
         q_act = {jn: float(q_try.get(jn, 0.0)) for jn in act_names}
-        q_pas = {jn: float(q_try.get(jn, 0.0)) for jn in self._cfg.passive_joints if jn in q_try}
+        q_pas = {
+            jn: float(q_try.get(jn, 0.0))
+            for jn in self._cfg.passive_joints
+            if jn in q_try
+        }
         return IkSolveResult(
             success=True,
             status="analytic_success",
             message="IK analytic solve converged (d45 vectorised search)",
-            q_dynamic={jn: float(q_try.get(jn, 0.0)) for jn in self._cfg.dynamic_joints},
+            q_dynamic={
+                jn: float(q_try.get(jn, 0.0)) for jn in self._cfg.dynamic_joints
+            },
             q_actuated=q_act,
             q_passive=q_pas,
             iterations=max(1, last_search_n_pts * 2),
@@ -482,5 +519,3 @@ class AnalyticIKSolver(_IKBase):
             pos_error_m=pos_err,
             rot_error_rad=rot_err,
         )
-
-

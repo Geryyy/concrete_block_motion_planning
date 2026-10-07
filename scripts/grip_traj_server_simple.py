@@ -7,25 +7,25 @@ Uses analytic IK plus bounded, minimum-time q9 trajectories.
 
 from __future__ import annotations
 
-from collections import deque
 import math
+import sys
+from collections import deque
+from pathlib import Path
 
 import numpy as np
 import rclpy
-from rclpy.node import Node
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import Path as NavPath
+from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Float64
 from tf2_ros import StaticTransformBroadcaster
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+
 from timber_crane_planning_interfaces.srv import CalcGripMovement
 
-# Set up import paths for motion_planning library
-import sys
-from pathlib import Path
-
+# Set up import paths for the motion_planning library
 _here = Path(__file__).resolve().parent
 # Add scripts/ dir so "import grip_trajectory" works
 if str(_here) not in sys.path:
@@ -39,25 +39,33 @@ for _candidate in [_here, _here.parent]:
 else:
     try:
         from ament_index_python.packages import get_package_share_directory
+
         _share = Path(get_package_share_directory("concrete_block_motion_planning"))
         if str(_share) not in sys.path:
             sys.path.insert(0, str(_share))
     except Exception:
         pass
 
-from grip_trajectory import GripTrajectoryConfig, compute_grip_trajectory  # noqa: E402
+from grip_trajectory import (  # noqa: E402
+    PHASE_DESCEND,
+    TELESCOPE_INDEX,
+    TELESCOPE_JOINT,
+    GripTrajectoryConfig,
+    compute_grip_trajectory,
+)
 from motion_planning.mechanics import (  # noqa: E402
     ModelDescription,
     create_crane_config,
 )
-from motion_planning.mechanics.crane_geometry import DEFAULT_CRANE_GEOMETRY  # noqa: E402
+from motion_planning.mechanics.crane_geometry import (  # noqa: E402
+    DEFAULT_CRANE_GEOMETRY,
+)
 from motion_planning.mechanics.inverse_kinematics import AnalyticIKSolver  # noqa: E402
 from motion_planning.mechanics.pinocchio_utils import (  # noqa: E402
     fk_homogeneous,
     passive_joint_equilibrium,
 )
 from motion_planning.mechanics.pose_conventions import pose_from_pos_yaw  # noqa: E402
-
 
 CONTROLLED_JOINT_NAMES = [
     "theta1_slewing_joint",
@@ -87,9 +95,7 @@ class GripTrajServerSimple(Node):
         # Parameters
         self.declare_parameter("service_name", "grip_traj_movement")
         self.declare_parameter("joint_states_topic", "/joint_states")
-        self.declare_parameter(
-            "controlled_joint_names", CONTROLLED_JOINT_NAMES
-        )
+        self.declare_parameter("controlled_joint_names", CONTROLLED_JOINT_NAMES)
         self.declare_parameter("dt_target", 0.01)
         self.declare_parameter("lift_height", 0.5)
         self.declare_parameter("gripper_open_position", 0.15)
@@ -118,9 +124,7 @@ class GripTrajServerSimple(Node):
         self.declare_parameter("duration_descend", 5.0)
         self.declare_parameter("duration_lift", 5.0)
 
-        self._joint_names = (
-            self.get_parameter("controlled_joint_names").value
-        )
+        self._joint_names = self.get_parameter("controlled_joint_names").value
         grip_scale = self.get_parameter("gripper_command_scale").value
         gripper_max_velocity = self.get_parameter("gripper_max_velocity_mps").value
         gripper_max_acceleration = self.get_parameter(
@@ -139,14 +143,23 @@ class GripTrajServerSimple(Node):
         self._cfg = GripTrajectoryConfig(
             dt=self.get_parameter("dt_target").value,
             lift_height=self.get_parameter("lift_height").value,
-            gripper_open_position=self.get_parameter("gripper_open_position").value * grip_scale,
-            gripper_close_position=self.get_parameter("gripper_close_position").value * grip_scale,
+            gripper_open_position=self.get_parameter("gripper_open_position").value
+            * grip_scale,
+            gripper_close_position=self.get_parameter("gripper_close_position").value
+            * grip_scale,
             gripper_max_velocity_mps=gripper_max_velocity,
             gripper_max_acceleration_mps2=gripper_max_acceleration,
             duration_descend=self.get_parameter("duration_descend").value,
             duration_lift=self.get_parameter("duration_lift").value,
         )
         self._gripper_index = len(self._joint_names) - 1  # last joint is gripper
+        # The descent pins the telescope by *index* into this vector but by name
+        # in the IK, so a reordered list would pin q4 to another joint's value.
+        if self._joint_names[TELESCOPE_INDEX] != TELESCOPE_JOINT:
+            raise ValueError(
+                f"controlled_joint_names[{TELESCOPE_INDEX}] must be "
+                f"'{TELESCOPE_JOINT}', got '{self._joint_names[TELESCOPE_INDEX]}'"
+            )
         self._tcp_z_offset = self.get_parameter("tcp_z_offset").value
         self._block_grip_z_offset = self.get_parameter("block_grip_z_offset").value
         self._use_passive_steady_state = bool(
@@ -238,9 +251,7 @@ class GripTrajServerSimple(Node):
         # Service
         svc_name = self.get_parameter("service_name").value
         self.create_service(CalcGripMovement, svc_name, self._handle_request)
-        self.get_logger().info(
-            f"Simple grip trajectory server ready on '{svc_name}'"
-        )
+        self.get_logger().info(f"Simple grip trajectory server ready on '{svc_name}'")
 
     def _on_joint_state(self, msg: JointState):
         stamp_s = msg.header.stamp.sec + msg.header.stamp.nanosec * 1.0e-9
@@ -275,7 +286,10 @@ class GripTrajServerSimple(Node):
         max_abs_velocity = max(
             abs(self._latest_velocities[name]) for name in passive_names
         )
-        if self._passive_velocity_samples and stamp_s < self._passive_velocity_samples[-1][0]:
+        if (
+            self._passive_velocity_samples
+            and stamp_s < self._passive_velocity_samples[-1][0]
+        ):
             self._passive_velocity_samples.clear()
             self._passive_metric_start_s = None
         if self._passive_metric_start_s is None:
@@ -290,8 +304,7 @@ class GripTrajServerSimple(Node):
         )
         self._passive_velocity_rms = float(np.sqrt(np.mean(samples**2)))
         window_complete = (
-            stamp_s - self._passive_metric_start_s
-            >= self._passive_settle_window_s
+            stamp_s - self._passive_metric_start_s >= self._passive_settle_window_s
         )
         settled = (
             window_complete
@@ -305,9 +318,7 @@ class GripTrajServerSimple(Node):
             )
         self._passive_settled = settled
         self._passive_settled_pub.publish(Bool(data=settled))
-        self._passive_velocity_rms_pub.publish(
-            Float64(data=self._passive_velocity_rms)
-        )
+        self._passive_velocity_rms_pub.publish(Float64(data=self._passive_velocity_rms))
 
     def _get_q0(self) -> np.ndarray | None:
         """Extract current joint positions ordered by controlled_joint_names."""
@@ -328,10 +339,16 @@ class GripTrajServerSimple(Node):
         target_xyz: np.ndarray,
         phi_tool_n: float,
         seed_q: np.ndarray,
+        fixed_joints: dict[str, float] | None = None,
         *,
         use_passive_steady_state: bool,
     ) -> np.ndarray | None:
-        """Solve IK and return full joint vector (including gripper from seed)."""
+        """Solve IK and return full joint vector (including gripper from seed).
+
+        ``fixed_joints`` additionally holds named joints at a caller-chosen value;
+        the solver collapses its search over them. Returns None if that is
+        infeasible, so the caller can retry free.
+        """
         T = pose_from_pos_yaw(target_xyz, phi_tool_n)
 
         # Build seed dict from joint names (excluding gripper)
@@ -341,12 +358,12 @@ class GripTrajServerSimple(Node):
                 seed[name] = float(seed_q[i])
 
         measured_passive = {
-            name: seed[name]
-            for name in self._config.passive_joints
-            if name in seed
+            name: seed[name] for name in self._config.passive_joints if name in seed
         }
 
-        fixed = measured_passive
+        pinned = {k: float(v) for k, v in (fixed_joints or {}).items()}
+
+        fixed = {**measured_passive, **pinned}
         if use_passive_steady_state:
             # Solve from the settled pendulum, not from the measured angles.
             # Contact tilts the tip/tilt pair (a block resting on uneven ground
@@ -363,14 +380,17 @@ class GripTrajServerSimple(Node):
                     q_values[follower] = q_values[leader]
             for joint_name in self._config.locked_joints:
                 q_values.setdefault(joint_name, 0.0)
-            fixed = passive_joint_equilibrium(
-                pin_model=self._desc.model,
-                pin_data=self._eq_pin_data,
-                pin_module=self._pin,
-                q_values=q_values,
-                passive_joint_names=self._config.passive_joints,
-                seed=measured_passive,
-            )
+            fixed = {
+                **passive_joint_equilibrium(
+                    pin_model=self._desc.model,
+                    pin_data=self._eq_pin_data,
+                    pin_module=self._pin,
+                    q_values=q_values,
+                    passive_joint_names=self._config.passive_joints,
+                    seed=measured_passive,
+                ),
+                **pinned,
+            }
 
         result = None
         solved_fixed = fixed
@@ -396,17 +416,23 @@ class GripTrajServerSimple(Node):
             for joint_name in self._config.locked_joints:
                 q_values.setdefault(joint_name, 0.0)
 
-            next_fixed = passive_joint_equilibrium(
-                pin_model=self._desc.model,
-                pin_data=self._eq_pin_data,
-                pin_module=self._pin,
-                q_values=q_values,
-                passive_joint_names=self._config.passive_joints,
-                seed=fixed,
-            )
+            next_fixed = {
+                **passive_joint_equilibrium(
+                    pin_model=self._desc.model,
+                    pin_data=self._eq_pin_data,
+                    pin_module=self._pin,
+                    q_values=q_values,
+                    passive_joint_names=self._config.passive_joints,
+                    seed=fixed,
+                ),
+                **pinned,
+            }
             max_delta = max(
                 (
-                    abs(next_fixed.get(name, fixed.get(name, 0.0)) - fixed.get(name, 0.0))
+                    abs(
+                        next_fixed.get(name, fixed.get(name, 0.0))
+                        - fixed.get(name, 0.0)
+                    )
                     for name in self._config.passive_joints
                 ),
                 default=0.0,
@@ -433,7 +459,11 @@ class GripTrajServerSimple(Node):
 
         if result is None or not result.success:
             msg = "IK returned None" if result is None else result.message
-            self.get_logger().error(f"IK failed: {msg}")
+            # A failed pinned solve is not an error: the caller retries free.
+            if pinned:
+                self.get_logger().warning(f"IK failed with {pinned} held: {msg}")
+            else:
+                self.get_logger().error(f"IK failed: {msg}")
             return None
 
         # Build output joint vector
@@ -522,10 +552,11 @@ class GripTrajServerSimple(Node):
             phi_tool_n=phi_tool_n,
             phase=phase,
             slow_down=slow_down,
-            ik_solve_fn=lambda xyz, yaw, seed: self._ik_solve(
+            ik_solve_fn=lambda xyz, yaw, seed, fixed=None: self._ik_solve(
                 xyz,
                 yaw,
                 seed,
+                fixed,
                 use_passive_steady_state=use_passive_steady_state,
             ),
             fk_fn=self._fk,
@@ -537,6 +568,11 @@ class GripTrajServerSimple(Node):
             self.get_logger().error(f"Trajectory generation failed: {result.message}")
             response.success = 0
             return response
+
+        if phase == PHASE_DESCEND and result.message:
+            # A free-solved waypoint is back on the IK's coarse q4 grid, so it
+            # steps off the pinned line: the jerk this phase exists to avoid.
+            self.get_logger().warning(f"Descend | {result.message}")
 
         if phase == 4 and len(result.q_traj) > 0:
             start_k8 = self._fk(result.q_traj[0])
@@ -571,9 +607,7 @@ class GripTrajServerSimple(Node):
             pt.velocities = result.qd_traj[i].tolist()
             pt.accelerations = result.qdd_traj[i].tolist()
             t = result.times[i]
-            pt.time_from_start = Duration(
-                sec=int(t), nanosec=int((t - int(t)) * 1e9)
-            )
+            pt.time_from_start = Duration(sec=int(t), nanosec=int((t - int(t)) * 1e9))
             traj.points.append(pt)
 
         # Ensure final point has zero velocity
@@ -590,7 +624,7 @@ class GripTrajServerSimple(Node):
 
         self.get_logger().info(
             f"Trajectory computed | {len(traj.points)} points, "
-            f"duration={result.times[-1]:.2f}s"
+            f"duration={result.times[-1]:.2f}s {result.message}"
         )
         return response
 

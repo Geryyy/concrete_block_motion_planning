@@ -32,6 +32,13 @@ PHASE_LIFT = 4
 #: Task-space spacing of the descent's IK waypoints.
 DESCEND_STEP_M = 0.05
 
+#: Telescope joint, pinned to a straight line through the descent.  The IK
+#: searches the telescope on a 120-point grid over its whole range, so a free
+#: solve quantises q4 to ~19 mm and the descent steps through it.
+#: Index is its slot in the caller's joint vector (CONTROLLED_JOINT_NAMES).
+TELESCOPE_JOINT = "q4_big_telescope"
+TELESCOPE_INDEX = 3
+
 
 @dataclass
 class GripTrajectoryConfig:
@@ -208,7 +215,8 @@ def compute_grip_trajectory(
         phi_tool_n: Target tool yaw (used by DESCEND and LIFT)
         phase: 1=descend, 2=close gripper, 3=open gripper, 4=lift
         slow_down: Speed factor (1.0 = normal, >1 = slower)
-        ik_solve_fn: callable(xyz, yaw, seed_q) -> q_target or None
+        ik_solve_fn: callable(xyz, yaw, seed_q, fixed_joints=None) -> q_target or None,
+            where fixed_joints maps a joint name to a value the solver must hold
         fk_fn: callable(q) -> xyz (3,)
         cfg: Trajectory configuration
         gripper_index: Index of gripper joint in q vector
@@ -235,19 +243,41 @@ def _descend(q0, target_xyz, phi_tool_n, sd, ik_solve_fn, fk_fn, cfg, grip_idx):
     Straight in task space, not in joint space: a joint-space line from the 3.7 m carry
     height bowed 7 cm radially and set the block on its neighbour, 2 cm away (sim, wall
     run 65). IK every `DESCEND_STEP_M`, each seeded by the last; minimum-jerk along the line.
+
+    The telescope is pinned to its own straight line from q0 to the target solve.
+    Left free, the IK picks it off a coarse grid, so it holds for 4-6 waypoints and
+    then jumps ~19 mm; boom and arm compensate exactly, so all three pulse.
     """
     start = np.asarray(fk_fn(q0), dtype=float)
     target = np.asarray(target_xyz, dtype=float)
     count = max(int(np.ceil(np.linalg.norm(target - start) / DESCEND_STEP_M)), 1)
+
+    q_target = ik_solve_fn(target, phi_tool_n, q0)
+    if q_target is None:
+        return _fail(len(q0), "IK failed for descend target")
+    q4_start = float(q0[TELESCOPE_INDEX])
+    q4_delta = float(np.asarray(q_target, dtype=float)[TELESCOPE_INDEX]) - q4_start
+
     waypoints = [np.asarray(q0, dtype=float)]
+    unpinned: list[int] = []
     for k in range(1, count + 1):
-        q = ik_solve_fn(start + (target - start) * k / count, phi_tool_n, waypoints[-1])
+        xyz = start + (target - start) * k / count
+        pinned = {TELESCOPE_JOINT: q4_start + q4_delta * k / count}
+        q = ik_solve_fn(xyz, phi_tool_n, waypoints[-1], pinned)
+        if q is None:
+            unpinned.append(k)
+            q = ik_solve_fn(xyz, phi_tool_n, waypoints[-1])
         if q is None:
             return _fail(len(q0), f"IK failed for descend waypoint {k}/{count}")
         q = np.asarray(q, dtype=float)
         q[grip_idx] = q0[grip_idx]
         waypoints.append(q)
     waypoints = np.array(waypoints)
+    message = (
+        f"q4 pinning infeasible at waypoints {unpinned} of {count}; solved those free"
+        if unpinned
+        else ""
+    )
 
     duration = cfg.duration_descend * sd
     _, _, _, times = minimum_jerk_interpolate(np.zeros(1), np.ones(1), duration, cfg.dt)
@@ -261,7 +291,7 @@ def _descend(q0, target_xyz, phi_tool_n, sd, ik_solve_fn, fk_fn, cfg, grip_idx):
     acc = np.gradient(vel, times, axis=0)
     vel[[0, -1]] = 0.0
     acc[[0, -1]] = 0.0
-    return GripTrajectoryResult(True, pos, vel, acc, times)
+    return GripTrajectoryResult(True, pos, vel, acc, times, message=message)
 
 
 def _set_gripper(q0, target_position, slow_down, cfg, grip_idx):

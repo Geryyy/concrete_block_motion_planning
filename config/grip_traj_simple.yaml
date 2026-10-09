@@ -54,5 +54,11 @@ grip_traj_server:
     # Per-segment durations in seconds for the multi-joint crane motions.
     # LIFT uses a zero-acceleration, minimum-jerk profile; increase this first
     # if lift-off excites passive-joint sway.
+    # DESCEND is paced by distance; duration_descend is only its cap.
     duration_descend: 5.0
     duration_lift: 5.0
+    # Mean task-space descent speed (min-jerk peaks at 1.875x). 0.05 keeps
+    # every descent >= 0.25 m on the cap, so only the place/pickup corrections
+    # (1-9 cm, previously a flat 5 s each) get shorter.
+    descend_speed_mps: 0.05
+    descend_min_duration_s: 1.0

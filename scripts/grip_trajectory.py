@@ -51,8 +51,17 @@ class GripTrajectoryConfig:
     gripper_max_velocity_mps: float = 0.10
     gripper_max_acceleration_mps2: float = 0.25
     # Per-segment durations in seconds for the multi-joint crane motions.
+    # duration_descend is the *cap*: the descent is paced by descend_speed_mps
+    # and only runs this long once it is long enough to need it.
     duration_descend: float = 5.0
     duration_lift: float = 5.0
+    # Mean task-space speed of the descent. Min-jerk peaks at 1.875x this.
+    # 0.05 reproduces the tuned touchdown (0.25 m, slow_down 2 -> 10 s); every
+    # descent over 0.25 m is on the duration_descend cap anyway, so this only
+    # paces the short ones.
+    descend_speed_mps: float = 0.05
+    # Floor, so a 1-2 cm correction is not a step.
+    descend_min_duration_s: float = 1.0
 
 
 @dataclass
@@ -250,7 +259,8 @@ def _descend(q0, target_xyz, phi_tool_n, sd, ik_solve_fn, fk_fn, cfg, grip_idx):
     """
     start = np.asarray(fk_fn(q0), dtype=float)
     target = np.asarray(target_xyz, dtype=float)
-    count = max(int(np.ceil(np.linalg.norm(target - start) / DESCEND_STEP_M)), 1)
+    distance = float(np.linalg.norm(target - start))
+    count = max(int(np.ceil(distance / DESCEND_STEP_M)), 1)
 
     q_target = ik_solve_fn(target, phi_tool_n, q0)
     if q_target is None:
@@ -279,7 +289,18 @@ def _descend(q0, target_xyz, phi_tool_n, sd, ik_solve_fn, fk_fn, cfg, grip_idx):
         else ""
     )
 
-    duration = cfg.duration_descend * sd
+    # Pace by distance: a place correction moves 2-10 cm and took the same full
+    # 5 s as the 1.8 m pickup descent, up to three times in a row. Same
+    # min-jerk shape, clamped between a floor and the old fixed duration, so
+    # every descent on the cap (>= 0.25 m: pickup 1.8 m, place approach 1.2 m,
+    # touchdown 0.25 m at slow_down 2) keeps its tuned timing exactly.
+    duration = (
+        min(
+            max(distance / cfg.descend_speed_mps, cfg.descend_min_duration_s),
+            cfg.duration_descend,
+        )
+        * sd
+    )
     _, _, _, times = minimum_jerk_interpolate(np.zeros(1), np.ones(1), duration, cfg.dt)
     u = times / duration
     s = (10.0 * u**3 - 15.0 * u**4 + 6.0 * u**5) * count

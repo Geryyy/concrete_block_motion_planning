@@ -123,6 +123,8 @@ class GripTrajServerSimple(Node):
         self.declare_parameter("gripper_max_acceleration_mps2", 0.25)
         self.declare_parameter("duration_descend", 5.0)
         self.declare_parameter("duration_lift", 5.0)
+        self.declare_parameter("descend_speed_mps", 0.05)
+        self.declare_parameter("descend_min_duration_s", 1.0)
 
         self._joint_names = self.get_parameter("controlled_joint_names").value
         grip_scale = self.get_parameter("gripper_command_scale").value
@@ -140,6 +142,15 @@ class GripTrajServerSimple(Node):
                 "gripper_max_velocity_mps and gripper_max_acceleration_mps2 "
                 "must be finite, positive values"
             )
+        descend_speed = self.get_parameter("descend_speed_mps").value
+        descend_min_duration = self.get_parameter("descend_min_duration_s").value
+        if (
+            not 0.0 < descend_speed < math.inf
+            or not 0.0 < descend_min_duration < math.inf
+        ):
+            raise ValueError(
+                "descend_speed_mps and descend_min_duration_s must be finite and positive"
+            )
         self._cfg = GripTrajectoryConfig(
             dt=self.get_parameter("dt_target").value,
             lift_height=self.get_parameter("lift_height").value,
@@ -151,6 +162,8 @@ class GripTrajServerSimple(Node):
             gripper_max_acceleration_mps2=gripper_max_acceleration,
             duration_descend=self.get_parameter("duration_descend").value,
             duration_lift=self.get_parameter("duration_lift").value,
+            descend_speed_mps=descend_speed,
+            descend_min_duration_s=descend_min_duration,
         )
         self._gripper_index = len(self._joint_names) - 1  # last joint is gripper
         # The descent pins the telescope by *index* into this vector but by name

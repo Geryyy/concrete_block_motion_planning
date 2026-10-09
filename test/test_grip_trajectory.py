@@ -163,6 +163,38 @@ def test_descend_stays_on_the_straight_line() -> None:
     assert result.q_traj[-1][7] == 0.2, "the gripper does not move"
 
 
+def test_descend_duration_follows_the_distance() -> None:
+    """A 1-2 cm place correction took the same 5 s as a 1.8 m pickup descent.
+
+    Distances from the logged run: pickup 1.80 m and place approach 1.19 m stay
+    on the duration_descend cap, the touchdown's 0.25 m lands exactly on it (so
+    its tuned landing speed is untouched), and only the corrections shorten.
+    """
+    cfg = GripTrajectoryConfig(dt=0.01)
+
+    def fk(q):
+        return q[:3].copy()
+
+    def ik(xyz, _yaw, seed, _fixed=None):
+        q = np.array(seed, dtype=float)
+        q[:3] = xyz
+        return q
+
+    def duration_of(distance, slow_down=1.0):
+        q0 = np.zeros(8)
+        result = compute_grip_trajectory(
+            q0, np.array([0.0, 0.0, -distance]), 0.0, 1, slow_down, ik, fk, cfg
+        )
+        assert result.success
+        return float(result.times[-1])
+
+    assert np.isclose(duration_of(1.80), 5.0)
+    assert np.isclose(duration_of(1.19), 5.0)
+    assert np.isclose(duration_of(0.25, slow_down=2.0), 10.0)
+    assert np.isclose(duration_of(0.08), 1.6)
+    assert np.isclose(duration_of(0.02), cfg.descend_min_duration_s)
+
+
 # ---------------------------------------------------------------------------
 # Descent with the real analytic IK.  The stub above cannot show the defect of
 # issue 215: q4 steps come out of the solver's d45 grid, not out of _descend.

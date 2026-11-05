@@ -343,8 +343,11 @@ class GripTrajServerSimple(Node):
                 self.get_logger().error(f"Joint '{name}' not in joint_states")
                 return None
             q0[i] = self._latest_positions[name]
-        # Normalize rotator angle to [-pi, pi]
-        q0[6] = math.atan2(math.sin(q0[6]), math.cos(q0[6]))
+        # Normalize rotator angle to [-pi, pi]; the whole turns go back on before publishing,
+        # the machine reports the rotator unwrapped and would turn them off (lab 2026-11-04).
+        wrapped = math.atan2(math.sin(q0[6]), math.cos(q0[6]))
+        self._rotator_turns = q0[6] - wrapped
+        q0[6] = wrapped
         return q0
 
     def _ik_solve(
@@ -616,7 +619,9 @@ class GripTrajServerSimple(Node):
 
         for i in range(len(result.times)):
             pt = JointTrajectoryPoint()
-            pt.positions = result.q_traj[i].tolist()
+            positions = result.q_traj[i].copy()
+            positions[6] += self._rotator_turns
+            pt.positions = positions.tolist()
             pt.velocities = result.qd_traj[i].tolist()
             pt.accelerations = result.qdd_traj[i].tolist()
             t = result.times[i]

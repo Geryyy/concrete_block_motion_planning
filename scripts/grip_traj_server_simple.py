@@ -47,6 +47,7 @@ else:
         pass
 
 from grip_trajectory import (  # noqa: E402
+    PHASE_CLOSE,
     PHASE_DESCEND,
     TELESCOPE_INDEX,
     TELESCOPE_JOINT,
@@ -60,8 +61,10 @@ from motion_planning.mechanics import (  # noqa: E402
 from motion_planning.mechanics.crane_geometry import (  # noqa: E402
     DEFAULT_CRANE_GEOMETRY,
 )
+from motion_planning.mechanics.elasticity import ElasticityCompensation  # noqa: E402
 from motion_planning.mechanics.inverse_kinematics import AnalyticIKSolver  # noqa: E402
 from motion_planning.mechanics.pinocchio_utils import (  # noqa: E402
+    arm_gravity_torque,
     fk_homogeneous,
     passive_joint_equilibrium,
 )
@@ -125,6 +128,10 @@ class GripTrajServerSimple(Node):
         self.declare_parameter("duration_lift", 5.0)
         self.declare_parameter("descend_speed_mps", 0.05)
         self.declare_parameter("descend_min_duration_s", 1.0)
+        # Raise a loaded place target by the bend it gains over the pick's.
+        self.declare_parameter("compensate_elasticity", False)
+        self.declare_parameter("payload_mass", 880.0)
+        self.declare_parameter("elasticity_p", [0.00750624, 0.0102337, 1.05088e-06])
 
         self._joint_names = self.get_parameter("controlled_joint_names").value
         grip_scale = self.get_parameter("gripper_command_scale").value
@@ -223,6 +230,16 @@ class GripTrajServerSimple(Node):
         import pinocchio as pin
 
         self._pin = pin
+        self._gravity_pin_data = self._desc.model.createData()
+        self._elasticity = ElasticityCompensation(
+            p=self.get_parameter("elasticity_p").value,
+            payload_mass=self.get_parameter("payload_mass").value,
+            tau3_fn=self._arm_gravity_torque,
+            enabled=bool(self.get_parameter("compensate_elasticity").value),
+        )
+        self.get_logger().info(
+            f"Elasticity goal correction: {'on' if self._elasticity.enabled else 'off'}"
+        )
         # Path visualization publisher (same topics as timber grip_traj_server)
         self._path_pub = self.create_publisher(NavPath, "tcp_path", 10)
         self._passive_settled_pub = self.create_publisher(
@@ -494,27 +511,40 @@ class GripTrajServerSimple(Node):
                 q_out[idx] = val
         return q_out
 
-    def _fk_transform(self, q: np.ndarray) -> np.ndarray:
-        """Forward kinematics: joint vector → K8 4x4 homogeneous transform in K0."""
-        import pinocchio as pin
-
+    def _q_map(self, q: np.ndarray) -> dict[str, float]:
+        """Joint vector → model joint names, tied joints followed, locked ones at zero."""
         q_map = {}
         for i, name in enumerate(self._joint_names):
             if i != self._gripper_index:
                 q_map[name] = float(q[i])
-        # Add tied joints
-        if "q5_small_telescope" not in q_map and "q4_big_telescope" in q_map:
-            q_map["q5_small_telescope"] = q_map["q4_big_telescope"]
-        # Add locked joints at zero
+        for follower, leader in self._config.tied_joints.items():
+            if leader in q_map:
+                q_map.setdefault(follower, q_map[leader])
         for jn in self._config.locked_joints:
-            if jn not in q_map:
-                q_map[jn] = 0.0
+            q_map.setdefault(jn, 0.0)
+        return q_map
+
+    def _arm_gravity_torque(
+        self, q_map: dict[str, float], payload_mass: float
+    ) -> float:
+        return arm_gravity_torque(
+            pin_model=self._desc.model,
+            pin_data=self._gravity_pin_data,
+            pin_module=self._pin,
+            q_values=q_map,
+            payload_mass=payload_mass,
+            frame_cache=self._frame_cache,
+        )
+
+    def _fk_transform(self, q: np.ndarray) -> np.ndarray:
+        """Forward kinematics: joint vector → K8 4x4 homogeneous transform in K0."""
+        import pinocchio as pin
 
         return fk_homogeneous(
             pin_model=self._desc.model,
             pin_data=self._desc.data,
             pin_module=pin,
-            q_values=q_map,
+            q_values=self._q_map(q),
             base_frame="K0_mounting_base",
             end_frame="K8_tool_center_point",
             frame_cache=self._frame_cache,
@@ -562,6 +592,33 @@ class GripTrajServerSimple(Node):
             f"phi={math.degrees(phi_tool_n):.1f}deg slow_down={slow_down:.1f}"
         )
 
+        # Read live, so `ros2 param set` takes effect between requests.
+        self._elasticity.enabled = bool(
+            self.get_parameter("compensate_elasticity").value
+        )
+        if phase == PHASE_DESCEND and request.carries_log and self._elasticity.enabled:
+            # Solve the nominal target first: the bend is a function of the pose the
+            # crane ends in, which only the IK knows.
+            q_nominal = self._ik_solve(
+                target_xyz,
+                phi_tool_n,
+                q0,
+                use_passive_steady_state=use_passive_steady_state,
+            )
+            if q_nominal is None:
+                self.get_logger().warning(
+                    "Elasticity: nominal IK failed, target left uncorrected"
+                )
+            else:
+                shift = self._elasticity.place_shift(self._q_map(q_nominal))
+                target_xyz[2] += shift
+                self.get_logger().info(
+                    f"Elasticity | shift={shift:+.3f}m "
+                    f"dz_pick={self._elasticity.dz_pick:.3f}m "
+                    f"payload={self._elasticity.payload_mass:.0f}kg "
+                    f"target_K8_z={target_xyz[2]:.3f}"
+                )
+
         result = compute_grip_trajectory(
             q0=q0,
             target_xyz=target_xyz,
@@ -589,6 +646,12 @@ class GripTrajServerSimple(Node):
             # A free-solved waypoint is back on the IK's coarse q4 grid, so it
             # steps off the pinned line: the jerk this phase exists to avoid.
             self.get_logger().warning(f"Descend | {result.message}")
+
+        if phase == PHASE_CLOSE and not request.carries_log and len(result.q_traj) > 0:
+            # The grip pose is the sag the grip depth was taken at; every later place
+            # target is corrected against it.
+            dz_pick = self._elasticity.store_pick(self._q_map(result.q_traj[-1]))
+            self.get_logger().info(f"Elasticity | dz_pick={dz_pick:.3f}m")
 
         if phase == 4 and len(result.q_traj) > 0:
             start_k8 = self._fk(result.q_traj[0])

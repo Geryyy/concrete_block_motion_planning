@@ -16,7 +16,9 @@ def joint_bounds(pin_model, joint_name: str) -> tuple[float, float]:
         return lo, hi
     if int(j.nq) == 2 and int(j.nv) == 1:
         return -np.inf, np.inf
-    raise ValueError(f"Unsupported joint representation nq={j.nq}, nv={j.nv} for '{joint_name}'.")
+    raise ValueError(
+        f"Unsupported joint representation nq={j.nq}, nv={j.nv} for '{joint_name}'."
+    )
 
 
 def q_map_to_pin_q(pin_model, q_values: Mapping[str, float], pin_module) -> np.ndarray:
@@ -34,11 +36,15 @@ def q_map_to_pin_q(pin_model, q_values: Mapping[str, float], pin_module) -> np.n
             q_pin[iq] = float(np.cos(val))
             q_pin[iq + 1] = float(np.sin(val))
         else:
-            raise ValueError(f"Unsupported joint representation nq={j.nq}, nv={j.nv} for '{jn}'.")
+            raise ValueError(
+                f"Unsupported joint representation nq={j.nq}, nv={j.nv} for '{jn}'."
+            )
     return q_pin
 
 
-def sample_dynamic_q_within_limits(pin_model, dynamic_joint_names: list[str], rng: np.random.Generator) -> dict[str, float]:
+def sample_dynamic_q_within_limits(
+    pin_model, dynamic_joint_names: list[str], rng: np.random.Generator
+) -> dict[str, float]:
     q: dict[str, float] = {}
     for jn in dynamic_joint_names:
         jid = int(pin_model.getJointId(jn))
@@ -55,7 +61,9 @@ def sample_dynamic_q_within_limits(pin_model, dynamic_joint_names: list[str], rn
         elif nq == 2 and int(joint.nv) == 1:
             q[jn] = float(rng.uniform(-np.pi, np.pi))
         else:
-            raise ValueError(f"Unsupported joint representation for sampling: {jn} (nq={joint.nq}, nv={joint.nv})")
+            raise ValueError(
+                f"Unsupported joint representation for sampling: {jn} (nq={joint.nq}, nv={joint.nv})"
+            )
     return q
 
 
@@ -120,14 +128,49 @@ def passive_joint_equilibrium(
         pin_module.computeGeneralizedGravity(pin_model, pin_data, q_pin)
         return np.array([float(pin_data.g[iv]) for iv in passive_v_idx])
 
-    x0 = np.array([
-        float((seed or {}).get(n, q_values.get(n, 0.0)))
-        for n in passive_joint_names
-    ])
+    x0 = np.array(
+        [float((seed or {}).get(n, q_values.get(n, 0.0))) for n in passive_joint_names]
+    )
     sol, _, ier, _ = fsolve(residual, x0, full_output=True, xtol=tol)
     if ier != 1:
         return {n: float(x0[i]) for i, n in enumerate(passive_joint_names)}
     return {n: float(sol[i]) for i, n in enumerate(passive_joint_names)}
+
+
+def arm_gravity_torque(
+    *,
+    pin_model,
+    pin_data,
+    pin_module,
+    q_values: Mapping[str, float],
+    joint_name: str = "theta3_arm_joint",
+    payload_mass: float = 0.0,
+    payload_frame: str = "K8_tool_center_point",
+    frame_cache: dict[str, int] | None = None,
+) -> float:
+    """Gravity torque [N*m] on one joint, payload as a point mass at ``payload_frame``.
+
+    The payload enters through the frame's vertical Jacobian row, so only its height
+    lever matters -- the tool hangs vertical, so K8 and the grip point share it.
+    """
+    q_pin = q_map_to_pin_q(pin_model, q_values, pin_module)
+    idx_v = int(pin_model.joints[int(pin_model.getJointId(joint_name))].idx_v)
+    pin_module.computeGeneralizedGravity(pin_model, pin_data, q_pin)
+    torque = float(pin_data.g[idx_v])
+    if payload_mass:
+        pin_module.computeJointJacobians(pin_model, pin_data, q_pin)
+        pin_module.updateFramePlacements(pin_model, pin_data)
+        jacobian = pin_module.getFrameJacobian(
+            pin_model,
+            pin_data,
+            frame_id(
+                pin_model, payload_frame, frame_cache if frame_cache is not None else {}
+            ),
+            pin_module.ReferenceFrame.LOCAL_WORLD_ALIGNED,
+        )
+        gravity = abs(float(np.asarray(pin_model.gravity.linear, dtype=float)[2]))
+        torque += float(jacobian[2, idx_v]) * float(payload_mass) * gravity
+    return torque
 
 
 def fk_homogeneous(

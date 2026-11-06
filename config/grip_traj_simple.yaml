@@ -62,3 +62,9 @@ grip_traj_server:
     # (1-9 cm, previously a flat 5 s each) get shorter.
     descend_speed_mps: 0.05
     descend_min_duration_s: 1.0
+    # Raise a loaded place target by the bend it gains over the pick's. Off: the
+    # payload term of the curve below is extrapolated, and Gazebo has no bend at all.
+    compensate_elasticity: false
+    payload_mass: 880.0  # block at the TCP, for the bend's torque term
+    # dz = p1*q4 + p2*q4^2 + p3*tau3*q4, the sag in m; fitted on empty runs.
+    elasticity_p: [0.00750624, 0.0102337, 1.05088e-06]

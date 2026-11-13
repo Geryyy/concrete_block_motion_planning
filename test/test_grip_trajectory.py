@@ -118,6 +118,28 @@ def test_lift_uses_minimum_jerk_profile() -> None:
     assert np.isclose(result.q_traj[-1, 3], 0.20)
 
 
+def test_an_unreachable_lift_fails_instead_of_lifting_part_way() -> None:
+    """The 0.75/0.5/0.25 ladder passed a short lift as success; the jaws opened below."""
+    cfg = GripTrajectoryConfig(dt=0.01, lift_height=0.20, duration_lift=4.0)
+
+    def ik_solve_fn(target_xyz, _yaw, seed_q, _fixed=None):
+        return None if target_xyz[2] > 0.25 * cfg.lift_height else seed_q.copy()
+
+    result = compute_grip_trajectory(
+        np.zeros(8),
+        np.zeros(3),
+        0.0,
+        PHASE_LIFT,
+        1.0,
+        ik_solve_fn,
+        lambda _q: np.zeros(3),
+        cfg,
+    )
+
+    assert not result.success
+    assert result.message == "IK failed for lift target"
+
+
 def test_gripper_times_stay_strictly_increasing_as_ros_durations() -> None:
     """Times must remain distinct after truncation to integer nanoseconds.
 
@@ -228,9 +250,9 @@ HANGING_TILT_RAD = 0.5 * np.pi
 def _real_ik_harness():
     """(ik, fk) closures over the real solver, as grip_traj_server_simple builds them.
 
-    Mirrors ``_ik_solve`` with ``use_passive_steady_state`` on: the passive pair
-    is re-settled against the solved arm pose, since a frozen tip angle tilts
-    the tool and breaks the solver's phi_tool == theta1 - theta8 assumption.
+    Mirrors ``_ik_solve``: the passive pair is re-settled against the solved arm
+    pose, since a frozen tip angle tilts the tool and breaks the solver's
+    phi_tool == theta1 - theta8 assumption.
     """
     import pinocchio as pin
     from motion_planning.mechanics import ModelDescription, create_crane_config

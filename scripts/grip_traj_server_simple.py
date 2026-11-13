@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import math
 import sys
-from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +18,6 @@ from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import Path as NavPath
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Bool, Float64
 from tf2_ros import StaticTransformBroadcaster
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
@@ -90,6 +88,8 @@ IK_ACTUATED = [
     "theta8_rotator_joint",
 ]
 
+MAX_INPUT_AGE_S = 0.5  # = crane_planning max_input_age
+
 
 class GripTrajServerSimple(Node):
     def __init__(self):
@@ -113,14 +113,7 @@ class GripTrajServerSimple(Node):
         # For a ~0.6m tall block this is ~0.3m (half the block height).
         # Combined with tcp_z_offset this gives the full CoG→K8 offset.
         self.declare_parameter("block_grip_z_offset", -0.3)
-        self.declare_parameter("use_passive_steady_state", False)
-        # Lift-off starts from the measured passive state.  Contact and a
-        # freshly grasped, off-centre block make a gravity-only steady-state
-        # prediction unreliable at this point.
-        self.declare_parameter("lift_use_passive_steady_state", False)
         self.declare_parameter("passive_steady_state_iterations", 3)
-        self.declare_parameter("passive_settle_velocity_threshold_radps", 0.02)
-        self.declare_parameter("passive_settle_window_s", 0.75)
         # Authoritative q9 limits; tune and validate these on the real crane.
         self.declare_parameter("gripper_max_velocity_mps", 0.10)
         self.declare_parameter("gripper_max_acceleration_mps2", 0.25)
@@ -182,41 +175,14 @@ class GripTrajServerSimple(Node):
             )
         self._tcp_z_offset = self.get_parameter("tcp_z_offset").value
         self._block_grip_z_offset = self.get_parameter("block_grip_z_offset").value
-        self._use_passive_steady_state = bool(
-            self.get_parameter("use_passive_steady_state").value
-        )
-        self._lift_use_passive_steady_state = bool(
-            self.get_parameter("lift_use_passive_steady_state").value
-        )
         self._passive_steady_state_iterations = max(
             1,
             int(self.get_parameter("passive_steady_state_iterations").value),
         )
-        self._passive_settle_threshold = float(
-            self.get_parameter("passive_settle_velocity_threshold_radps").value
-        )
-        self._passive_settle_window_s = float(
-            self.get_parameter("passive_settle_window_s").value
-        )
-        if (
-            not math.isfinite(self._passive_settle_threshold)
-            or not math.isfinite(self._passive_settle_window_s)
-            or self._passive_settle_threshold < 0.0
-            or self._passive_settle_window_s <= 0.0
-        ):
-            raise ValueError(
-                "passive settle threshold must be non-negative and window positive"
-            )
 
         # Joint state subscription
         self._latest_positions: dict[str, float] = {}
-        self._latest_velocities: dict[str, float] = {}
-        self._previous_position_samples: dict[str, tuple[float, float]] = {}
-        self._passive_velocity_samples: deque[tuple[float, float]] = deque()
-        self._passive_metric_start_s: float | None = None
-        self._passive_velocity_rms = float("nan")
-        self._passive_settled = False
-        self._js_stamp = None
+        self._js_stamp_s: float | None = None
         js_topic = self.get_parameter("joint_states_topic").value
         self.create_subscription(JointState, js_topic, self._on_joint_state, 10)
 
@@ -242,12 +208,6 @@ class GripTrajServerSimple(Node):
         )
         # Path visualization publisher (same topics as timber grip_traj_server)
         self._path_pub = self.create_publisher(NavPath, "tcp_path", 10)
-        self._passive_settled_pub = self.create_publisher(
-            Bool, "grip_traj/passive_settled", 10
-        )
-        self._passive_velocity_rms_pub = self.create_publisher(
-            Float64, "grip_traj/passive_velocity_rms", 10
-        )
 
         # Publish virtual_tcp TF derived from tcp_z_offset (single source of truth)
         self._tf_broadcaster = StaticTransformBroadcaster(self)
@@ -261,22 +221,6 @@ class GripTrajServerSimple(Node):
         self.get_logger().info(
             f"Published virtual_tcp TF: z={self._tcp_z_offset:.3f}m from K8"
         )
-        self.get_logger().info(
-            "Passive joint handling: "
-            + (
-                "static equilibrium refinement enabled"
-                if self._use_passive_steady_state
-                else "measured joint_states held fixed"
-            )
-        )
-        self.get_logger().info(
-            "Lift passive handling: "
-            + (
-                "static equilibrium refinement enabled"
-                if self._lift_use_passive_steady_state
-                else "start from measured passive state"
-            )
-        )
 
         # Service
         svc_name = self.get_parameter("service_name").value
@@ -289,66 +233,8 @@ class GripTrajServerSimple(Node):
             stamp_s = self.get_clock().now().nanoseconds * 1.0e-9
         for i, name in enumerate(msg.name):
             if i < len(msg.position):
-                position = float(msg.position[i])
-                measured_velocity = (
-                    float(msg.velocity[i])
-                    if i < len(msg.velocity) and math.isfinite(msg.velocity[i])
-                    else None
-                )
-                previous = self._previous_position_samples.get(name)
-                if measured_velocity is None and previous is not None:
-                    previous_position, previous_stamp_s = previous
-                    elapsed_s = stamp_s - previous_stamp_s
-                    if elapsed_s > 1.0e-4:
-                        measured_velocity = (position - previous_position) / elapsed_s
-                self._latest_positions[name] = position
-                if measured_velocity is not None and math.isfinite(measured_velocity):
-                    self._latest_velocities[name] = measured_velocity
-                self._previous_position_samples[name] = (position, stamp_s)
-        self._js_stamp = msg.header.stamp
-        self._update_passive_settle_metric(stamp_s)
-
-    def _update_passive_settle_metric(self, stamp_s: float) -> None:
-        """Publish a moving RMS metric; it never gates trajectory planning."""
-        passive_names = self._config.passive_joints
-        if any(name not in self._latest_velocities for name in passive_names):
-            return
-        max_abs_velocity = max(
-            abs(self._latest_velocities[name]) for name in passive_names
-        )
-        if (
-            self._passive_velocity_samples
-            and stamp_s < self._passive_velocity_samples[-1][0]
-        ):
-            self._passive_velocity_samples.clear()
-            self._passive_metric_start_s = None
-        if self._passive_metric_start_s is None:
-            self._passive_metric_start_s = stamp_s
-        self._passive_velocity_samples.append((stamp_s, max_abs_velocity))
-        earliest_s = stamp_s - self._passive_settle_window_s
-        while self._passive_velocity_samples[0][0] < earliest_s:
-            self._passive_velocity_samples.popleft()
-
-        samples = np.fromiter(
-            (value for _, value in self._passive_velocity_samples), dtype=float
-        )
-        self._passive_velocity_rms = float(np.sqrt(np.mean(samples**2)))
-        window_complete = (
-            stamp_s - self._passive_metric_start_s >= self._passive_settle_window_s
-        )
-        settled = (
-            window_complete
-            and self._passive_velocity_rms <= self._passive_settle_threshold
-        )
-        if settled != self._passive_settled:
-            self.get_logger().info(
-                "Passive settle state: "
-                f"{'settled' if settled else 'moving'} "
-                f"(max-joint velocity RMS={self._passive_velocity_rms:.4f} rad/s)"
-            )
-        self._passive_settled = settled
-        self._passive_settled_pub.publish(Bool(data=settled))
-        self._passive_velocity_rms_pub.publish(Float64(data=self._passive_velocity_rms))
+                self._latest_positions[name] = float(msg.position[i])
+        self._js_stamp_s = stamp_s
 
     def _get_q0(self) -> np.ndarray | None:
         """Extract current joint positions ordered by controlled_joint_names."""
@@ -373,8 +259,6 @@ class GripTrajServerSimple(Node):
         phi_tool_n: float,
         seed_q: np.ndarray,
         fixed_joints: dict[str, float] | None = None,
-        *,
-        use_passive_steady_state: bool,
     ) -> np.ndarray | None:
         """Solve IK and return full joint vector (including gripper from seed).
 
@@ -396,34 +280,28 @@ class GripTrajServerSimple(Node):
 
         pinned = {k: float(v) for k, v in (fixed_joints or {}).items()}
 
-        fixed = {**measured_passive, **pinned}
-        if use_passive_steady_state:
-            # Solve from the settled pendulum, not from the measured angles.
-            # Contact tilts the tip/tilt pair (a block resting on uneven ground
-            # held theta6 at 39 deg, statically), and iteration 1 used to solve
-            # against that frozen tilt while pose_from_pos_yaw asks for an
-            # upright tool -- unsatisfiable, and the failure broke out of the
-            # loop before the equilibrium model was ever consulted, which is
-            # exactly the case it exists for.  Every pose we solve for here is
-            # one the pendulum reaches hanging free, so start there; the loop
-            # below still refines against the solved arm pose.
-            q_values = dict(seed)
-            for follower, leader in self._config.tied_joints.items():
-                if leader in q_values:
-                    q_values[follower] = q_values[leader]
-            for joint_name in self._config.locked_joints:
-                q_values.setdefault(joint_name, 0.0)
-            fixed = {
-                **passive_joint_equilibrium(
-                    pin_model=self._desc.model,
-                    pin_data=self._eq_pin_data,
-                    pin_module=self._pin,
-                    q_values=q_values,
-                    passive_joint_names=self._config.passive_joints,
-                    seed=measured_passive,
-                ),
-                **pinned,
-            }
+        # Solve from the settled pendulum, not from the measured angles.  Contact
+        # tilts the tip/tilt pair (a block resting on uneven ground held theta6 at
+        # 39 deg, statically) while pose_from_pos_yaw asks for an upright tool --
+        # unsatisfiable.  Every pose solved for here is one the pendulum reaches
+        # hanging free; the loop below refines against the solved arm pose.
+        q_values = dict(seed)
+        for follower, leader in self._config.tied_joints.items():
+            if leader in q_values:
+                q_values[follower] = q_values[leader]
+        for joint_name in self._config.locked_joints:
+            q_values.setdefault(joint_name, 0.0)
+        fixed = {
+            **passive_joint_equilibrium(
+                pin_model=self._desc.model,
+                pin_data=self._eq_pin_data,
+                pin_module=self._pin,
+                q_values=q_values,
+                passive_joint_names=self._config.passive_joints,
+                seed=measured_passive,
+            ),
+            **pinned,
+        }
 
         result = None
         solved_fixed = fixed
@@ -438,7 +316,7 @@ class GripTrajServerSimple(Node):
             )
             solved_fixed = fixed
 
-            if result is None or not result.success or not use_passive_steady_state:
+            if result is None or not result.success:
                 break
 
             q_values = dict(seed)
@@ -474,13 +352,7 @@ class GripTrajServerSimple(Node):
             if max_delta < 1e-4:
                 break
 
-        needs_final_refine = (
-            use_passive_steady_state
-            and result is not None
-            and result.success
-            and fixed != solved_fixed
-        )
-        if needs_final_refine:
+        if result is not None and result.success and fixed != solved_fixed:
             result = self._ik_solver.solve(
                 target_T_base_to_end=T,
                 base_frame="K0_mounting_base",
@@ -567,6 +439,15 @@ class GripTrajServerSimple(Node):
             response.success = 0
             return response
 
+        age_s = self.get_clock().now().nanoseconds * 1.0e-9 - self._js_stamp_s
+        if age_s > MAX_INPUT_AGE_S:
+            self.get_logger().error(
+                f"Joint states are {age_s:.2f} s old, past the "
+                f"{MAX_INPUT_AGE_S:.2f} s this plans from"
+            )
+            response.success = 0
+            return response
+
         # Input is block CoG. Shift up by:
         #   block_grip_z_offset  (CoG → grip point on block top)
         #   tcp_z_offset         (grip point → K8_tool_center_point)
@@ -577,11 +458,6 @@ class GripTrajServerSimple(Node):
         phi_tool_n = request.phi_tool_n
         phase = request.select_phases
         slow_down = max(request.slow_down, 0.1)
-        use_passive_steady_state = (
-            self._lift_use_passive_steady_state
-            if phase == 4
-            else self._use_passive_steady_state
-        )
 
         current_xyz = self._fk(q0)
         self.get_logger().info(
@@ -599,12 +475,7 @@ class GripTrajServerSimple(Node):
         if phase == PHASE_DESCEND and request.carries_log and self._elasticity.enabled:
             # Solve the nominal target first: the bend is a function of the pose the
             # crane ends in, which only the IK knows.
-            q_nominal = self._ik_solve(
-                target_xyz,
-                phi_tool_n,
-                q0,
-                use_passive_steady_state=use_passive_steady_state,
-            )
+            q_nominal = self._ik_solve(target_xyz, phi_tool_n, q0)
             if q_nominal is None:
                 self.get_logger().warning(
                     "Elasticity: nominal IK failed, target left uncorrected"
@@ -625,13 +496,7 @@ class GripTrajServerSimple(Node):
             phi_tool_n=phi_tool_n,
             phase=phase,
             slow_down=slow_down,
-            ik_solve_fn=lambda xyz, yaw, seed, fixed=None: self._ik_solve(
-                xyz,
-                yaw,
-                seed,
-                fixed,
-                use_passive_steady_state=use_passive_steady_state,
-            ),
+            ik_solve_fn=self._ik_solve,
             fk_fn=self._fk,
             cfg=self._cfg,
             gripper_index=self._gripper_index,
@@ -667,12 +532,9 @@ class GripTrajServerSimple(Node):
             self.get_logger().info(
                 "Lift trajectory | "
                 f"configured_lift={self._cfg.lift_height:.3f}m "
-                f"{result.message} "
                 f"K8_z={start_k8[2]:.3f}->{end_k8[2]:.3f} "
                 f"TCP_z={start_tcp[2]:.3f}->{end_tcp[2]:.3f} "
                 f"duration={result.times[-1]:.2f}s "
-                f"passive_policy={'equilibrium' if use_passive_steady_state else 'measured'} "
-                f"passive_settled={self._passive_settled} "
                 f"q_delta=[{named_delta}]"
             )
 

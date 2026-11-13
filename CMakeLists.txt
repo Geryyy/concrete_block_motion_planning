@@ -22,6 +22,7 @@ install(DIRECTORY
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_grip_trajectory test/test_grip_trajectory.py)
+  ament_add_pytest_test(test_grip_traj_server test/test_grip_traj_server.py)
   ament_add_pytest_test(test_elasticity test/test_elasticity.py)
 endif()
 

@@ -344,29 +344,17 @@ def _set_gripper(q0, target_position, slow_down, cfg, grip_idx):
 
 def _lift(q0, phi_tool_n, sd, ik_solve_fn, fk_fn, cfg, grip_idx):
     """Lift vertically from current position. Gripper stays as-is."""
-    current_xyz = fk_fn(q0)
+    lift_xyz = fk_fn(q0).copy()
+    lift_xyz[2] += cfg.lift_height
+    q_lifted = ik_solve_fn(lift_xyz, phi_tool_n, q0)
+    if q_lifted is None:
+        return _fail(len(q0), "IK failed for lift target")
 
-    # Try progressively smaller lift heights if IK fails
-    for scale in [1.0, 0.75, 0.5, 0.25]:
-        lift_xyz = current_xyz.copy()
-        lift_xyz[2] += cfg.lift_height * scale
-        q_lifted = ik_solve_fn(lift_xyz, phi_tool_n, q0)
-        if q_lifted is not None:
-            q_lifted[grip_idx] = q0[grip_idx]
-            pos, vel, acc, times = minimum_jerk_interpolate(
-                q0,
-                q_lifted,
-                cfg.duration_lift * sd,
-                cfg.dt,
-            )
-            actual_lift = float(lift_xyz[2] - current_xyz[2])
-            return GripTrajectoryResult(
-                True,
-                pos,
-                vel,
-                acc,
-                times,
-                message=f"lift_scale={scale:.2f} actual_lift={actual_lift:.3f}",
-            )
-
-    return _fail(len(q0), "IK failed for lift target")
+    q_lifted[grip_idx] = q0[grip_idx]
+    pos, vel, acc, times = minimum_jerk_interpolate(
+        q0,
+        q_lifted,
+        cfg.duration_lift * sd,
+        cfg.dt,
+    )
+    return GripTrajectoryResult(True, pos, vel, acc, times)
